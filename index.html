@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Lecteur de temps de conduite - BS ADC</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+:root{
+  --bg:#f4f7fb;
+  --card:#ffffff;
+  --text:#162033;
+  --muted:#667085;
+  --line:#d7deea;
+  --primary:#008c7a;
+  --primary2:#0f766e;
+  --danger:#b42318;
+  --warn:#b54708;
+  --ok:#027a48;
+  --soft:#eef8f6;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  font-family:Arial, Helvetica, sans-serif;
+  background:linear-gradient(135deg,#f4f7fb,#eaf3f1);
+  color:var(--text);
+}
+header{
+  padding:22px;
+  background:#fff;
+  border-bottom:1px solid var(--line);
+  position:sticky;
+  top:0;
+  z-index:10;
+}
+h1{margin:0;font-size:24px}
+header p{margin:6px 0 0;color:var(--muted)}
+main{max-width:1320px;margin:0 auto;padding:22px}
+.card{
+  background:var(--card);
+  border:1px solid var(--line);
+  border-radius:16px;
+  box-shadow:0 8px 24px rgba(16,24,40,.06);
+  padding:18px;
+  margin-bottom:18px;
+}
+.drop{
+  border:2px dashed #94a3b8;
+  border-radius:16px;
+  padding:28px;
+  text-align:center;
+  background:#fff;
+  transition:.2s;
+}
+.drop.drag{border-color:var(--primary);background:var(--soft)}
+input[type=file]{display:none}
+.btn{
+  appearance:none;
+  border:0;
+  background:var(--primary);
+  color:white;
+  padding:11px 16px;
+  border-radius:10px;
+  cursor:pointer;
+  font-weight:700;
+  margin:4px;
+}
+.btn.secondary{background:#344054}
+.btn.light{background:#e6f4f1;color:#005c50;border:1px solid #aadbd1}
+.btn.danger{background:var(--danger)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.grid{
+  display:grid;
+  grid-template-columns:repeat(4,1fr);
+  gap:12px;
+}
+.kpi{
+  background:#f8fafc;
+  border:1px solid var(--line);
+  border-radius:14px;
+  padding:14px;
+}
+.kpi .label{color:var(--muted);font-size:13px}
+.kpi .value{font-size:24px;font-weight:800;margin-top:4px}
+.table-wrap{overflow:auto;border:1px solid var(--line);border-radius:12px}
+table{border-collapse:collapse;width:100%;min-width:980px;background:white}
+th,td{
+  border-bottom:1px solid var(--line);
+  padding:9px 10px;
+  text-align:left;
+  vertical-align:middle;
+  font-size:14px;
+}
+th{background:#f1f5f9;font-size:13px;white-space:nowrap}
+td input{
+  width:100%;
+  border:1px solid #cbd5e1;
+  border-radius:8px;
+  padding:7px;
+  font-size:14px;
+}
+.badge{
+  display:inline-block;
+  padding:4px 8px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:700;
+}
+.badge.ok{background:#dcfae6;color:var(--ok)}
+.badge.warn{background:#fef0c7;color:var(--warn)}
+.badge.err{background:#fee4e2;color:var(--danger)}
+.small{font-size:13px;color:var(--muted)}
+pre{
+  white-space:pre-wrap;
+  background:#0f172a;
+  color:#e2e8f0;
+  border-radius:12px;
+  padding:14px;
+  max-height:260px;
+  overflow:auto;
+}
+.notice{
+  background:#fff7ed;
+  color:#9a3412;
+  border:1px solid #fed7aa;
+  padding:12px;
+  border-radius:12px;
+  margin-top:12px;
+}
+@media(max-width:900px){
+  .grid{grid-template-columns:repeat(2,1fr)}
+  header{position:static}
+}
+@media(max-width:600px){
+  .grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Lecteur de temps de conduite - Bulletins de Service ADC</h1>
+  <p>Import PDF, extraction agent / JS / trains, calcul automatique des heures réelles en train et export complet.</p>
+</header>
+
+<main>
+  <section class="card">
+    <div id="drop" class="drop">
+      <p>Dépose un ou plusieurs PDF de Bulletin de Service ici</p>
+      <button class="btn" onclick="document.getElementById('files').click()">Choisir des PDF</button>
+      <input id="files" type="file" accept="application/pdf" multiple>
+      <p class="small">Le calcul utilise H dép. et H arr. du tableau Train. Tu peux corriger manuellement les lignes avant export.</p>
+    </div>
+    <div id="pdfWarning" class="notice" style="display:none">
+      La librairie PDF n’est pas chargée. Ouvre ce fichier avec internet actif au premier lancement, ou remplace le lien PDF.js par une version locale.
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="grid">
+      <div class="kpi"><div class="label">PDF importés</div><div id="kpiFiles" class="value">0</div></div>
+      <div class="kpi"><div class="label">Trains détectés</div><div id="kpiTrains" class="value">0</div></div>
+      <div class="kpi"><div class="label">Temps conduite total</div><div id="kpiDriving" class="value">00:00</div></div>
+      <div class="kpi"><div class="label">Lignes à vérifier</div><div id="kpiWarnings" class="value">0</div></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <button class="btn secondary" onclick="exportCSV()">Exporter CSV complet</button>
+    <button class="btn secondary" onclick="exportXLS()">Exporter Excel complet</button>
+    <button class="btn light" onclick="exportJSON()">Exporter sauvegarde JSON</button>
+    <button class="btn danger" onclick="clearAll()">Vider</button>
+    <p class="small">L’export contient : fichier, date, agent, prénom, nom, matricule, JS, train, gares, départ, arrivée, durée conduite, matériel, nature et observations.</p>
+  </section>
+
+  <section class="card">
+    <h2>Détail des trains détectés</h2>
+    <div class="table-wrap">
+      <table id="trainTable">
+        <thead>
+          <tr>
+            <th>Statut</th>
+            <th>Fichier</th>
+            <th>Date</th>
+            <th>Agent</th>
+            <th>Matricule</th>
+            <th>JS</th>
+            <th>Train</th>
+            <th>De</th>
+            <th>À</th>
+            <th>H dép.</th>
+            <th>H arr.</th>
+            <th>Durée</th>
+            <th>Nat</th>
+            <th>EM</th>
+            <th>Code compo</th>
+            <th>Obs</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Synthèse par agent / journée</h2>
+    <div class="table-wrap">
+      <table id="summaryTable">
+        <thead>
+          <tr>
+            <th>Date</th>
+            <th>Agent</th>
+            <th>Matricule</th>
+            <th>JS</th>
+            <th>Nombre de trains</th>
+            <th>Temps conduite</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Texte PDF extrait</h2>
+    <p class="small">Utile pour contrôler si un PDF est mal lu.</p>
+    <pre id="rawText"></pre>
+  </section>
+</main>
+
+<script>
+if (window.pdfjsLib) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+} else {
+  document.getElementById("pdfWarning").style.display = "block";
+}
+
+let rows = [];
+let rawTexts = [];
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("files");
+
+["dragenter","dragover"].forEach(evt => drop.addEventListener(evt, e => {
+  e.preventDefault(); drop.classList.add("drag");
+}));
+["dragleave","drop"].forEach(evt => drop.addEventListener(evt, e => {
+  e.preventDefault(); drop.classList.remove("drag");
+}));
+drop.addEventListener("drop", e => handleFiles(e.dataTransfer.files));
+fileInput.addEventListener("change", e => handleFiles(e.target.files));
+
+async function handleFiles(fileList){
+  if(!window.pdfjsLib){
+    alert("PDF.js n'est pas chargé. Internet est nécessaire avec cette version.");
+    return;
+  }
+  const files = [...fileList].filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+  for(const file of files){
+    try{
+      const text = await extractPdfText(file);
+      rawTexts.push("===== " + file.name + " =====\n" + text);
+      const parsed = parseBulletin(text, file.name);
+      rows.push(...parsed);
+    }catch(err){
+      console.error(err);
+      alert("Erreur de lecture PDF : " + file.name + "\n" + err.message);
+    }
+  }
+  render();
+}
+
+async function extractPdfText(file){
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({data: buffer}).promise;
+  let full = "";
+  for(let p=1; p<=pdf.numPages; p++){
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const items = content.items.map(i => ({
+      str: i.str,
+      x: Math.round(i.transform[4]),
+      y: Math.round(i.transform[5])
+    }));
+    items.sort((a,b) => b.y - a.y || a.x - b.x);
+    let currentY = null, line = [];
+    for(const it of items){
+      if(currentY === null || Math.abs(it.y - currentY) <= 3){
+        line.push(it.str);
+        currentY = currentY ?? it.y;
+      }else{
+        full += line.join(" ").replace(/\s+/g," ").trim() + "\n";
+        line = [it.str];
+        currentY = it.y;
+      }
+    }
+    if(line.length) full += line.join(" ").replace(/\s+/g," ").trim() + "\n";
+    full += "\n";
+  }
+  return full;
+}
+
+function parseBulletin(text, fileName){
+  const clean = text.replace(/\uFFFE/g, "-").replace(/\s+/g, " ");
+  const date = matchOne(clean, /Date de service\s*:\s*([0-9]{2}\/[0-9]{2}\/[0-9]{4})/i) || matchOne(clean, /Date\s*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
+  const matricule = matchOne(clean, /Matricule\s*:\s*([0-9A-Za-z]+)/i);
+  const js = matchOne(clean, /JS\s*:\s*([A-Z0-9_-]+)/i);
+  let agent = matchOne(clean, /Agent\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s*-\s*Matricule/i);
+  const nom = matchOne(clean, /Nom\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s+Date\s*:/i);
+  const prenom = matchOne(clean, /Prénom\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s+Heure de PS/i);
+  if(!agent && (nom || prenom)) agent = [nom, prenom].filter(Boolean).join(" ");
+
+  const page1 = text.split(/Régularité|Signalisation|Conditions atmosphériques/i)[0];
+  const trains = parseTrainLines(page1, {fileName, date, agent, nom, prenom, matricule, js});
+  return trains;
+}
+
+function parseTrainLines(pageText, base){
+  const lines = pageText.split(/\n/).map(l => l.replace(/\uFFFE/g,"-").replace(/\s+/g," ").trim()).filter(Boolean);
+  const out = [];
+  const trainRegex = /^(\d{4,8})\s+(.+)$/;
+  for(let i=0;i<lines.length;i++){
+    const m = lines[i].match(trainRegex);
+    if(!m) continue;
+    if(/Date de service|Généré|Matricule|FRH|about:blank/.test(lines[i])) continue;
+
+    const trainNo = m[1];
+    let rest = m[2];
+
+    const times = [...rest.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)].map(x => x[0]);
+    if(times.length < 2) continue;
+
+    const depTime = times[0];
+    const arrTime = times[1];
+    const beforeTime = rest.slice(0, rest.indexOf(depTime)).trim();
+    const afterArr = rest.slice(rest.indexOf(arrTime) + arrTime.length).trim();
+
+    const places = splitPlaces(beforeTime);
+    const tokensAfter = afterArr.split(/\s+/).filter(Boolean);
+    const nat = tokensAfter[0] || "";
+    const em = tokensAfter.find(t => /^[0-9]{4,6}$/.test(t)) || "";
+    const compo = tokensAfter.find(t => /^[A-Z][A-Z0-9]{2,}$/.test(t) && t !== nat) || "";
+    const durationMin = diffMinutes(depTime, arrTime);
+
+    out.push({
+      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
+      status: durationMin >= 0 ? "OK" : "À vérifier",
+      fileName: base.fileName,
+      date: base.date || "",
+      agent: base.agent || "",
+      nom: base.nom || "",
+      prenom: base.prenom || "",
+      matricule: base.matricule || "",
+      js: base.js || "",
+      trainNo,
+      from: places.from,
+      to: places.to,
+      via: "",
+      depTime,
+      arrTime,
+      durationMin: durationMin < 0 ? 0 : durationMin,
+      nat,
+      em,
+      compo,
+      obs: durationMin < 0 ? "Heure arrivée antérieure au départ : vérifier passage minuit." : ""
+    });
+  }
+  return out;
+}
+
+function splitPlaces(s){
+  s = s.trim();
+  if(!s) return {from:"", to:""};
+  const known = ["CAEN","Cherbourg-en-Cotentin","Évreux-Embranchement","Evreux-Embranchement"];
+  let found = known.filter(k => s.toLowerCase().includes(k.toLowerCase()));
+  if(found.length >= 2) return {from:found[0], to:found[1]};
+  const parts = s.split(/\s{2,}|\s+-\s+/).filter(Boolean);
+  if(parts.length >= 2) return {from:parts[0], to:parts.slice(1).join(" ")};
+  const words = s.split(" ");
+  if(words.length >= 2) return {from:words[0], to:words.slice(1).join(" ")};
+  return {from:s, to:""};
+}
+
+function matchOne(text, regex){
+  const m = text.match(regex);
+  return m ? m[1].trim() : "";
+}
+
+function diffMinutes(dep, arr){
+  const [dh,dm] = dep.split(":").map(Number);
+  const [ah,am] = arr.split(":").map(Number);
+  let d = dh*60+dm, a = ah*60+am;
+  if(a < d) a += 24*60;
+  return a-d;
+}
+
+function fmtMin(min){
+  min = Number(min)||0;
+  const h = Math.floor(min/60);
+  const m = min%60;
+  return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
+}
+
+function render(){
+  const tbody = document.querySelector("#trainTable tbody");
+  tbody.innerHTML = "";
+  rows.forEach((r,idx) => {
+    const tr = document.createElement("tr");
+    const badgeClass = r.status === "OK" ? "ok" : "warn";
+    tr.innerHTML = `
+      <td><span class="badge ${badgeClass}">${escapeHtml(r.status)}</span></td>
+      <td>${escapeHtml(r.fileName)}</td>
+      <td><input value="${escapeHtml(r.date)}" onchange="edit(${idx},'date',this.value)"></td>
+      <td><input value="${escapeHtml(r.agent)}" onchange="edit(${idx},'agent',this.value)"></td>
+      <td><input value="${escapeHtml(r.matricule)}" onchange="edit(${idx},'matricule',this.value)"></td>
+      <td><input value="${escapeHtml(r.js)}" onchange="edit(${idx},'js',this.value)"></td>
+      <td><input value="${escapeHtml(r.trainNo)}" onchange="edit(${idx},'trainNo',this.value)"></td>
+      <td><input value="${escapeHtml(r.from)}" onchange="edit(${idx},'from',this.value)"></td>
+      <td><input value="${escapeHtml(r.to)}" onchange="edit(${idx},'to',this.value)"></td>
+      <td><input value="${escapeHtml(r.depTime)}" onchange="edit(${idx},'depTime',this.value);recalc(${idx})"></td>
+      <td><input value="${escapeHtml(r.arrTime)}" onchange="edit(${idx},'arrTime',this.value);recalc(${idx})"></td>
+      <td>${fmtMin(r.durationMin)}</td>
+      <td><input value="${escapeHtml(r.nat)}" onchange="edit(${idx},'nat',this.value)"></td>
+      <td><input value="${escapeHtml(r.em)}" onchange="edit(${idx},'em',this.value)"></td>
+      <td><input value="${escapeHtml(r.compo)}" onchange="edit(${idx},'compo',this.value)"></td>
+      <td><input value="${escapeHtml(r.obs)}" onchange="edit(${idx},'obs',this.value)"></td>
+      <td><button class="btn danger" onclick="removeRow(${idx})">Supprimer</button></td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const total = rows.reduce((s,r)=>s+(Number(r.durationMin)||0),0);
+  const warnings = rows.filter(r => r.status !== "OK" || !r.trainNo || !r.depTime || !r.arrTime).length;
+  document.getElementById("kpiFiles").textContent = new Set(rows.map(r=>r.fileName)).size;
+  document.getElementById("kpiTrains").textContent = rows.length;
+  document.getElementById("kpiDriving").textContent = fmtMin(total);
+  document.getElementById("kpiWarnings").textContent = warnings;
+  document.getElementById("rawText").textContent = rawTexts.join("\n\n");
+  renderSummary();
+}
+
+function renderSummary(){
+  const groups = new Map();
+  for(const r of rows){
+    const key = [r.date,r.agent,r.matricule,r.js].join("|");
+    if(!groups.has(key)) groups.set(key, {date:r.date, agent:r.agent, matricule:r.matricule, js:r.js, count:0, min:0});
+    const g = groups.get(key);
+    g.count++;
+    g.min += Number(r.durationMin)||0;
+  }
+  const tbody = document.querySelector("#summaryTable tbody");
+  tbody.innerHTML = "";
+  [...groups.values()].forEach(g => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${escapeHtml(g.date)}</td><td>${escapeHtml(g.agent)}</td><td>${escapeHtml(g.matricule)}</td><td>${escapeHtml(g.js)}</td><td>${g.count}</td><td>${fmtMin(g.min)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function edit(idx, field, val){ rows[idx][field] = val; }
+function recalc(idx){
+  const r = rows[idx];
+  if(/^\d{1,2}:\d{2}$/.test(r.depTime) && /^\d{1,2}:\d{2}$/.test(r.arrTime)){
+    r.durationMin = diffMinutes(r.depTime, r.arrTime);
+    r.status = "OK";
+  }else{
+    r.status = "À vérifier";
+    r.durationMin = 0;
+  }
+  render();
+}
+function removeRow(idx){ rows.splice(idx,1); render(); }
+function clearAll(){ rows=[]; rawTexts=[]; render(); }
+
+function exportCSV(){
+  const headers = exportHeaders();
+  const lines = [headers.join(";")];
+  rows.forEach(r => lines.push(headers.map(h => csvCell(exportValue(r,h))).join(";")));
+  downloadBlob(lines.join("\n"), "export_temps_conduite.csv", "text/csv;charset=utf-8");
+}
+
+function exportXLS(){
+  const headers = exportHeaders();
+  let html = "<html><head><meta charset='UTF-8'></head><body>";
+  html += "<table border='1'><tr>" + headers.map(h=>"<th>"+escapeHtml(h)+"</th>").join("") + "</tr>";
+  rows.forEach(r => {
+    html += "<tr>" + headers.map(h=>"<td>"+escapeHtml(exportValue(r,h))+"</td>").join("") + "</tr>";
+  });
+  html += "</table></body></html>";
+  downloadBlob(html, "export_temps_conduite.xls", "application/vnd.ms-excel;charset=utf-8");
+}
+
+function exportJSON(){
+  downloadBlob(JSON.stringify(rows,null,2), "sauvegarde_temps_conduite.json", "application/json;charset=utf-8");
+}
+
+function exportHeaders(){
+  return ["Fichier","Date","Agent","Nom","Prénom","Matricule","JS","Train","De","À","Via","H départ","H arrivée","Durée minutes","Durée HH:MM","Nat","EM","Code composition","Observation","Statut"];
+}
+function exportValue(r,h){
+  const map = {
+    "Fichier":r.fileName, "Date":r.date, "Agent":r.agent, "Nom":r.nom, "Prénom":r.prenom,
+    "Matricule":r.matricule, "JS":r.js, "Train":r.trainNo, "De":r.from, "À":r.to, "Via":r.via,
+    "H départ":r.depTime, "H arrivée":r.arrTime, "Durée minutes":r.durationMin, "Durée HH:MM":fmtMin(r.durationMin),
+    "Nat":r.nat, "EM":r.em, "Code composition":r.compo, "Observation":r.obs, "Statut":r.status
+  };
+  return map[h] ?? "";
+}
+function csvCell(v){
+  v = String(v ?? "");
+  return '"' + v.replace(/"/g,'""') + '"';
+}
+function downloadBlob(content, filename, type){
+  const blob = new Blob([content], {type});
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},500);
+}
+function escapeHtml(v){
+  return String(v ?? "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+}
+</script>
+</body>
+</html>
