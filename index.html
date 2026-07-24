@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Lecteur de temps de conduite - BS ADC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 <style>
 :root{
   --bg:#f4f7fb;
@@ -140,41 +143,74 @@ pre{
 <body>
 <header>
   <h1>Lecteur de temps de conduite - Bulletins de Service ADC</h1>
-  <p>Import PDF, extraction agent / JS / trains, calcul automatique des heures réelles en train et export complet.</p>
+  <p>Import PDF, extraction agent / JS / trains, calcul automatique des heures rÃ©elles en train et export complet.</p>
 </header>
 
 <main>
   <section class="card">
     <div id="drop" class="drop">
-      <p>Dépose un ou plusieurs PDF de Bulletin de Service ici</p>
+      <p>DÃ©pose un ou plusieurs PDF de Bulletin de Service ici</p>
       <button class="btn" onclick="document.getElementById('files').click()">Choisir des PDF</button>
       <input id="files" type="file" accept="application/pdf" multiple>
-      <p class="small">Le calcul utilise H dép. et H arr. du tableau Train. Tu peux corriger manuellement les lignes avant export.</p>
+      <p class="small">Le calcul utilise H dÃ©p. et H arr. du tableau Train. Tu peux corriger manuellement les lignes avant export.</p>
     </div>
     <div id="pdfWarning" class="notice" style="display:none">
-      La librairie PDF n’est pas chargée. Ouvre ce fichier avec internet actif au premier lancement, ou remplace le lien PDF.js par une version locale.
+      La librairie PDF nâ€™est pas chargÃ©e. Ouvre ce fichier avec internet actif au premier lancement, ou remplace le lien PDF.js par une version locale.
     </div>
   </section>
 
   <section class="card">
     <div class="grid">
-      <div class="kpi"><div class="label">PDF importés</div><div id="kpiFiles" class="value">0</div></div>
-      <div class="kpi"><div class="label">Trains détectés</div><div id="kpiTrains" class="value">0</div></div>
+      <div class="kpi"><div class="label">Bulletins importÃ©s</div><div id="kpiFiles" class="value">0</div></div>
+      <div class="kpi"><div class="label">Trains dÃ©tectÃ©s</div><div id="kpiTrains" class="value">0</div></div>
       <div class="kpi"><div class="label">Temps conduite total</div><div id="kpiDriving" class="value">00:00</div></div>
-      <div class="kpi"><div class="label">Lignes à vérifier</div><div id="kpiWarnings" class="value">0</div></div>
+      <div class="kpi"><div class="label">Amplitude PS rÃ©elle-FS rÃ©elle</div><div id="kpiAmplitude" class="value">00:00</div></div>
+      <div class="kpi"><div class="label">Travail effectif total</div><div id="kpiEffective" class="value">00:00</div></div>
+      <div class="kpi"><div class="label">Heures de nuit 22h-07h</div><div id="kpiNight" class="value">00:00</div></div>
+      <div class="kpi"><div class="label">Coupures cumulÃ©es</div><div id="kpiBreak" class="value">00:00</div></div>
+      <div class="kpi"><div class="label">Lignes Ã  vÃ©rifier</div><div id="kpiWarnings" class="value">0</div></div>
     </div>
   </section>
 
   <section class="card">
-    <button class="btn secondary" onclick="exportCSV()">Exporter CSV complet</button>
-    <button class="btn secondary" onclick="exportXLS()">Exporter Excel complet</button>
+    <button class="btn secondary" onclick="exportCSV()">Exporter CSV trains</button>
+    <button class="btn secondary" onclick="exportExcel()">Exporter Excel complet</button>
+    <button class="btn secondary" onclick="exportPDF()">Exporter PDF complet</button>
     <button class="btn light" onclick="exportJSON()">Exporter sauvegarde JSON</button>
     <button class="btn danger" onclick="clearAll()">Vider</button>
-    <p class="small">L’export contient : fichier, date, agent, prénom, nom, matricule, JS, train, gares, départ, arrivée, durée conduite, matériel, nature et observations.</p>
+    <p class="small">Les exports Excel et PDF contiennent le dÃ©tail des bulletins, les temps PS-FS, les coupures, le travail effectif, les heures de nuit, le temps de conduite et les synthÃ¨ses cumulÃ©es.</p>
   </section>
 
   <section class="card">
-    <h2>Détail des trains détectés</h2>
+    <h2>Temps extraits des bulletins</h2>
+    <div class="table-wrap">
+      <table id="bulletinTable">
+        <thead>
+          <tr>
+            <th>Statut</th>
+            <th>Fichier</th>
+            <th>Date</th>
+            <th>Agent</th>
+            <th>Matricule</th>
+            <th>JS</th>
+            <th>PS rÃ©elle</th>
+            <th>FS rÃ©elle</th>
+            <th>Amplitude PS-FS</th>
+            <th>Coupure</th>
+            <th>Travail effectif</th>
+            <th>Heures de nuit</th>
+            <th>Temps conduite</th>
+            <th>Trains</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>DÃ©tail des trains dÃ©tectÃ©s</h2>
     <div class="table-wrap">
       <table id="trainTable">
         <thead>
@@ -187,10 +223,10 @@ pre{
             <th>JS</th>
             <th>Train</th>
             <th>De</th>
-            <th>À</th>
-            <th>H dép.</th>
+            <th>Ã€</th>
+            <th>H dÃ©p.</th>
             <th>H arr.</th>
-            <th>Durée</th>
+            <th>DurÃ©e</th>
             <th>Nat</th>
             <th>EM</th>
             <th>Code compo</th>
@@ -204,7 +240,7 @@ pre{
   </section>
 
   <section class="card">
-    <h2>Synthèse par agent / journée</h2>
+    <h2>SynthÃ¨se par agent / journÃ©e</h2>
     <div class="table-wrap">
       <table id="summaryTable">
         <thead>
@@ -215,6 +251,32 @@ pre{
             <th>JS</th>
             <th>Nombre de trains</th>
             <th>Temps conduite</th>
+            <th>Amplitude PS-FS</th>
+            <th>Coupure</th>
+            <th>Travail effectif</th>
+            <th>Heures de nuit</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Cumuls par agent</h2>
+    <div class="table-wrap">
+      <table id="agentSummaryTable">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            <th>Matricule</th>
+            <th>Bulletins</th>
+            <th>Trains</th>
+            <th>Temps conduite</th>
+            <th>Amplitude PS-FS</th>
+            <th>Coupure</th>
+            <th>Travail effectif</th>
+            <th>Heures de nuit</th>
           </tr>
         </thead>
         <tbody></tbody>
@@ -237,6 +299,7 @@ if (window.pdfjsLib) {
 }
 
 let rows = [];
+let bulletins = [];
 let rawTexts = [];
 
 const drop = document.getElementById("drop");
@@ -253,7 +316,7 @@ fileInput.addEventListener("change", e => handleFiles(e.target.files));
 
 async function handleFiles(fileList){
   if(!window.pdfjsLib){
-    alert("PDF.js n'est pas chargé. Internet est nécessaire avec cette version.");
+    alert("PDF.js n'est pas chargÃ©. Internet est nÃ©cessaire avec cette version.");
     return;
   }
   const files = [...fileList].filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
@@ -262,7 +325,11 @@ async function handleFiles(fileList){
       const text = await extractPdfText(file);
       rawTexts.push("===== " + file.name + " =====\n" + text);
       const parsed = parseBulletin(text, file.name);
-      rows.push(...parsed);
+      // Un mÃªme fichier rÃ©importÃ© remplace sa prÃ©cÃ©dente lecture pour Ã©viter les doubles cumuls.
+      rows = rows.filter(r => r.fileName !== file.name);
+      bulletins = bulletins.filter(b => b.fileName !== file.name);
+      rows.push(...parsed.trains);
+      bulletins.push(parsed.bulletin);
     }catch(err){
       console.error(err);
       alert("Erreur de lecture PDF : " + file.name + "\n" + err.message);
@@ -302,18 +369,52 @@ async function extractPdfText(file){
 }
 
 function parseBulletin(text, fileName){
-  const clean = text.replace(/\uFFFE/g, "-").replace(/\s+/g, " ");
+  const clean = text.replace(/\uFFFE/g, "-").replace(/\s+/g, " ").trim();
   const date = matchOne(clean, /Date de service\s*:\s*([0-9]{2}\/[0-9]{2}\/[0-9]{4})/i) || matchOne(clean, /Date\s*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
   const matricule = matchOne(clean, /Matricule\s*:\s*([0-9A-Za-z]+)/i);
   const js = matchOne(clean, /JS\s*:\s*([A-Z0-9_-]+)/i);
-  let agent = matchOne(clean, /Agent\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s*-\s*Matricule/i);
-  const nom = matchOne(clean, /Nom\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s+Date\s*:/i);
-  const prenom = matchOne(clean, /Prénom\s*:\s*([A-Za-zÀ-ÿ' -]+?)\s+Heure de PS/i);
+  let agent = matchOne(clean, /Agent\s*:\s*([A-Za-zÃ€-Ã¿' -]+?)\s*-\s*Matricule/i);
+  const nom = matchOne(clean, /Nom\s*:\s*([A-Za-zÃ€-Ã¿' -]+?)\s+Date\s*:/i);
+  const prenom = matchOne(clean, /PrÃ©nom\s*:\s*([A-Za-zÃ€-Ã¿' -]+?)\s+Heure de PS/i);
   if(!agent && (nom || prenom)) agent = [nom, prenom].filter(Boolean).join(" ");
 
-  const page1 = text.split(/Régularité|Signalisation|Conditions atmosphériques/i)[0];
+  const psMatch = clean.match(/Heure de PS prÃ©vue\s*:\s*([0-2]?\d:[0-5]\d)\s+RÃ©elle\s*:\s*([0-2]?\d:[0-5]\d)/i);
+  const fsMatch = clean.match(/Heure de FS prÃ©vue\s*:\s*([0-2]?\d:[0-5]\d)\s+RÃ©elle\s*:\s*([0-2]?\d:[0-5]\d)/i);
+  const psReal = psMatch?.[2] || "";
+  const fsReal = fsMatch?.[2] || "";
+  const generatedAt = matchOne(clean, /GÃ©nÃ©rÃ© le\s*([^Â·]+?)(?=\s*[Â·|]\s*Amplitude|\s+Amplitude)/i);
+  const amplitudeText = matchOne(clean, /Amplitude\s+PS\s+r[Ã©e]elle\s*[-â€“â€”]\s*FS\s+r[Ã©e]elle\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
+  const breakText = matchOne(clean, /Coupure\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
+  const effectiveText = matchOne(clean, /Travail\s+effectif\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
+  const nightText = matchOne(clean, /Heures\s+de\s+nuit(?:\s+22h00\s*[-â€“â€”]\s*07h00)?\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
+
+  let amplitudeMin = parseDurationMinutes(amplitudeText);
+  const breakMin = parseDurationMinutes(breakText);
+  let effectiveMin = parseDurationMinutes(effectiveText);
+  let nightMin = parseDurationMinutes(nightText);
+  if(amplitudeMin == null && psReal && fsReal) amplitudeMin = diffMinutes(psReal, fsReal);
+  if(effectiveMin == null && amplitudeMin != null) effectiveMin = Math.max(0, amplitudeMin - (breakMin || 0));
+  if(nightMin == null && psReal && fsReal) nightMin = nightMinutesBetween(psReal, fsReal);
+
+  const page1 = text.split(/RÃ©gularitÃ©|Signalisation|Conditions atmosphÃ©riques/i)[0];
   const trains = parseTrainLines(page1, {fileName, date, agent, nom, prenom, matricule, js});
-  return trains;
+  const missing = [];
+  if(amplitudeMin == null) missing.push("amplitude PS-FS");
+  if(breakMin == null) missing.push("coupure");
+  if(effectiveMin == null) missing.push("travail effectif");
+  if(nightMin == null) missing.push("heures de nuit");
+  const bulletin = {
+    id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
+    fileName,date,agent,nom,prenom,matricule,js,psReal,fsReal,generatedAt,
+    amplitudeMin:amplitudeMin ?? 0,
+    breakMin:breakMin ?? 0,
+    effectiveMin:effectiveMin ?? 0,
+    nightMin:nightMin ?? 0,
+    metricsComplete:missing.length===0,
+    status:missing.length?"Ã€ vÃ©rifier":"OK",
+    obs:missing.length?"Valeurs non lues : "+missing.join(", "):""
+  };
+  return {trains,bulletin};
 }
 
 function parseTrainLines(pageText, base){
@@ -323,7 +424,7 @@ function parseTrainLines(pageText, base){
   for(let i=0;i<lines.length;i++){
     const m = lines[i].match(trainRegex);
     if(!m) continue;
-    if(/Date de service|Généré|Matricule|FRH|about:blank/.test(lines[i])) continue;
+    if(/Date de service|GÃ©nÃ©rÃ©|Matricule|FRH|about:blank/.test(lines[i])) continue;
 
     const trainNo = m[1];
     let rest = m[2];
@@ -345,7 +446,7 @@ function parseTrainLines(pageText, base){
 
     out.push({
       id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
-      status: durationMin >= 0 ? "OK" : "À vérifier",
+      status: durationMin >= 0 ? "OK" : "Ã€ vÃ©rifier",
       fileName: base.fileName,
       date: base.date || "",
       agent: base.agent || "",
@@ -363,7 +464,7 @@ function parseTrainLines(pageText, base){
       nat,
       em,
       compo,
-      obs: durationMin < 0 ? "Heure arrivée antérieure au départ : vérifier passage minuit." : ""
+      obs: durationMin < 0 ? "Heure arrivÃ©e antÃ©rieure au dÃ©part : vÃ©rifier passage minuit." : ""
     });
   }
   return out;
@@ -372,7 +473,7 @@ function parseTrainLines(pageText, base){
 function splitPlaces(s){
   s = s.trim();
   if(!s) return {from:"", to:""};
-  const known = ["CAEN","Cherbourg-en-Cotentin","Évreux-Embranchement","Evreux-Embranchement"];
+  const known = ["CAEN","Cherbourg-en-Cotentin","Ã‰vreux-Embranchement","Evreux-Embranchement"];
   let found = known.filter(k => s.toLowerCase().includes(k.toLowerCase()));
   if(found.length >= 2) return {from:found[0], to:found[1]};
   const parts = s.split(/\s{2,}|\s+-\s+/).filter(Boolean);
@@ -387,12 +488,36 @@ function matchOne(text, regex){
   return m ? m[1].trim() : "";
 }
 
+function parseDurationMinutes(value){
+  const m = String(value||"").trim().match(/^(\d{1,3})\s*[h:]\s*(\d{2})$/i);
+  if(!m) return null;
+  const hours=Number(m[1]),minutes=Number(m[2]);
+  if(minutes<0||minutes>59) return null;
+  return hours*60+minutes;
+}
+
 function diffMinutes(dep, arr){
   const [dh,dm] = dep.split(":").map(Number);
   const [ah,am] = arr.split(":").map(Number);
   let d = dh*60+dm, a = ah*60+am;
   if(a < d) a += 24*60;
   return a-d;
+}
+
+function nightMinutesBetween(startTime,endTime){
+  if(!/^\d{1,2}:\d{2}$/.test(startTime)||!/^\d{1,2}:\d{2}$/.test(endTime)) return null;
+  const [sh,sm]=startTime.split(":").map(Number);
+  const [eh,em]=endTime.split(":").map(Number);
+  const start=sh*60+sm;
+  let end=eh*60+em;
+  if(end<start) end+=1440;
+  let total=0;
+  for(let day=-1;day<=2;day++){
+    const nightStart=day*1440+22*60;
+    const nightEnd=(day+1)*1440+7*60;
+    total+=Math.max(0,Math.min(end,nightEnd)-Math.max(start,nightStart));
+  }
+  return total;
 }
 
 function fmtMin(min){
@@ -431,47 +556,138 @@ function render(){
   });
 
   const total = rows.reduce((s,r)=>s+(Number(r.durationMin)||0),0);
-  const warnings = rows.filter(r => r.status !== "OK" || !r.trainNo || !r.depTime || !r.arrTime).length;
-  document.getElementById("kpiFiles").textContent = new Set(rows.map(r=>r.fileName)).size;
+  const warnings = rows.filter(r => r.status !== "OK" || !r.trainNo || !r.depTime || !r.arrTime).length + bulletins.filter(b=>b.status!=="OK").length;
+  document.getElementById("kpiFiles").textContent = bulletins.length;
   document.getElementById("kpiTrains").textContent = rows.length;
   document.getElementById("kpiDriving").textContent = fmtMin(total);
+  document.getElementById("kpiAmplitude").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.amplitudeMin)||0),0));
+  document.getElementById("kpiEffective").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.effectiveMin)||0),0));
+  document.getElementById("kpiNight").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.nightMin)||0),0));
+  document.getElementById("kpiBreak").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.breakMin)||0),0));
   document.getElementById("kpiWarnings").textContent = warnings;
   document.getElementById("rawText").textContent = rawTexts.join("\n\n");
+  renderBulletins();
   renderSummary();
+  renderAgentSummary();
 }
 
-function renderSummary(){
-  const groups = new Map();
-  for(const r of rows){
-    const key = [r.date,r.agent,r.matricule,r.js].join("|");
-    if(!groups.has(key)) groups.set(key, {date:r.date, agent:r.agent, matricule:r.matricule, js:r.js, count:0, min:0});
-    const g = groups.get(key);
-    g.count++;
-    g.min += Number(r.durationMin)||0;
-  }
-  const tbody = document.querySelector("#summaryTable tbody");
-  tbody.innerHTML = "";
-  [...groups.values()].forEach(g => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td>${escapeHtml(g.date)}</td><td>${escapeHtml(g.agent)}</td><td>${escapeHtml(g.matricule)}</td><td>${escapeHtml(g.js)}</td><td>${g.count}</td><td>${fmtMin(g.min)}</td>`;
+function bulletinDrivingMin(fileName){
+  return rows.filter(r=>r.fileName===fileName).reduce((sum,r)=>sum+(Number(r.durationMin)||0),0);
+}
+
+function bulletinTrainCount(fileName){
+  return rows.filter(r=>r.fileName===fileName).length;
+}
+
+function renderBulletins(){
+  const tbody=document.querySelector("#bulletinTable tbody");
+  tbody.innerHTML="";
+  bulletins.forEach((b,idx)=>{
+    const tr=document.createElement("tr");
+    const badgeClass=b.status==="OK"?"ok":"warn";
+    tr.innerHTML=`
+      <td><span class="badge ${badgeClass}" title="${escapeHtml(b.obs||"")}">${escapeHtml(b.status)}</span></td>
+      <td>${escapeHtml(b.fileName)}</td>
+      <td>${escapeHtml(b.date)}</td>
+      <td>${escapeHtml(b.agent)}</td>
+      <td>${escapeHtml(b.matricule)}</td>
+      <td>${escapeHtml(b.js)}</td>
+      <td>${escapeHtml(b.psReal||"â€”")}</td>
+      <td>${escapeHtml(b.fsReal||"â€”")}</td>
+      <td>${fmtMin(b.amplitudeMin)}</td>
+      <td>${fmtMin(b.breakMin)}</td>
+      <td>${fmtMin(b.effectiveMin)}</td>
+      <td>${fmtMin(b.nightMin)}</td>
+      <td>${fmtMin(bulletinDrivingMin(b.fileName))}</td>
+      <td>${bulletinTrainCount(b.fileName)}</td>
+      <td><button class="btn danger" onclick="removeBulletin(${idx})">Supprimer</button></td>`;
     tbody.appendChild(tr);
   });
 }
 
-function edit(idx, field, val){ rows[idx][field] = val; }
+function getDailySummary(){
+  const groups = new Map();
+  for(const b of bulletins){
+    const key = [b.date,b.agent,b.matricule,b.js].join("|");
+    if(!groups.has(key)) groups.set(key, {date:b.date,agent:b.agent,matricule:b.matricule,js:b.js,count:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
+    const g = groups.get(key);
+    g.count+=bulletinTrainCount(b.fileName);
+    g.drivingMin+=bulletinDrivingMin(b.fileName);
+    g.amplitudeMin+=Number(b.amplitudeMin)||0;
+    g.breakMin+=Number(b.breakMin)||0;
+    g.effectiveMin+=Number(b.effectiveMin)||0;
+    g.nightMin+=Number(b.nightMin)||0;
+  }
+  return [...groups.values()].sort((a,b)=>String(a.date).localeCompare(String(b.date))||String(a.agent).localeCompare(String(b.agent),"fr"));
+}
+
+function getAgentSummary(){
+  const groups=new Map();
+  for(const b of bulletins){
+    const key=[b.agent,b.matricule].join("|");
+    if(!groups.has(key)) groups.set(key,{agent:b.agent,matricule:b.matricule,bulletins:0,trains:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
+    const g=groups.get(key);
+    g.bulletins++;
+    g.trains+=bulletinTrainCount(b.fileName);
+    g.drivingMin+=bulletinDrivingMin(b.fileName);
+    g.amplitudeMin+=Number(b.amplitudeMin)||0;
+    g.breakMin+=Number(b.breakMin)||0;
+    g.effectiveMin+=Number(b.effectiveMin)||0;
+    g.nightMin+=Number(b.nightMin)||0;
+  }
+  return [...groups.values()].sort((a,b)=>String(a.agent).localeCompare(String(b.agent),"fr"));
+}
+
+function renderSummary(){
+  const tbody = document.querySelector("#summaryTable tbody");
+  tbody.innerHTML = "";
+  getDailySummary().forEach(g => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${escapeHtml(g.date)}</td><td>${escapeHtml(g.agent)}</td><td>${escapeHtml(g.matricule)}</td><td>${escapeHtml(g.js)}</td><td>${g.count}</td><td>${fmtMin(g.drivingMin)}</td><td>${fmtMin(g.amplitudeMin)}</td><td>${fmtMin(g.breakMin)}</td><td>${fmtMin(g.effectiveMin)}</td><td>${fmtMin(g.nightMin)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function renderAgentSummary(){
+  const tbody=document.querySelector("#agentSummaryTable tbody");
+  tbody.innerHTML="";
+  getAgentSummary().forEach(g=>{
+    const tr=document.createElement("tr");
+    tr.innerHTML=`<td>${escapeHtml(g.agent)}</td><td>${escapeHtml(g.matricule)}</td><td>${g.bulletins}</td><td>${g.trains}</td><td>${fmtMin(g.drivingMin)}</td><td>${fmtMin(g.amplitudeMin)}</td><td>${fmtMin(g.breakMin)}</td><td>${fmtMin(g.effectiveMin)}</td><td>${fmtMin(g.nightMin)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+function edit(idx, field, value){
+  const row=rows[idx];
+  if(!row)return;
+  row[field]=value;
+  if(["date","agent","matricule","js"].includes(field)){
+    rows.filter(r=>r.fileName===row.fileName).forEach(r=>r[field]=value);
+    const bulletin=bulletins.find(b=>b.fileName===row.fileName);
+    if(bulletin)bulletin[field]=value;
+  }
+}
 function recalc(idx){
   const r = rows[idx];
   if(/^\d{1,2}:\d{2}$/.test(r.depTime) && /^\d{1,2}:\d{2}$/.test(r.arrTime)){
     r.durationMin = diffMinutes(r.depTime, r.arrTime);
     r.status = "OK";
   }else{
-    r.status = "À vérifier";
+    r.status = "Ã€ vÃ©rifier";
     r.durationMin = 0;
   }
   render();
 }
 function removeRow(idx){ rows.splice(idx,1); render(); }
-function clearAll(){ rows=[]; rawTexts=[]; render(); }
+function removeBulletin(idx){
+  const bulletin=bulletins[idx];
+  if(!bulletin)return;
+  rows=rows.filter(r=>r.fileName!==bulletin.fileName);
+  bulletins.splice(idx,1);
+  render();
+}
+function clearAll(){ rows=[]; bulletins=[]; rawTexts=[]; fileInput.value=""; render(); }
 
 function exportCSV(){
   const headers = exportHeaders();
@@ -480,30 +696,100 @@ function exportCSV(){
   downloadBlob(lines.join("\n"), "export_temps_conduite.csv", "text/csv;charset=utf-8");
 }
 
-function exportXLS(){
-  const headers = exportHeaders();
-  let html = "<html><head><meta charset='UTF-8'></head><body>";
-  html += "<table border='1'><tr>" + headers.map(h=>"<th>"+escapeHtml(h)+"</th>").join("") + "</tr>";
-  rows.forEach(r => {
-    html += "<tr>" + headers.map(h=>"<td>"+escapeHtml(exportValue(r,h))+"</td>").join("") + "</tr>";
-  });
-  html += "</table></body></html>";
-  downloadBlob(html, "export_temps_conduite.xls", "application/vnd.ms-excel;charset=utf-8");
+function bulletinExportData(){
+  return bulletins.map(b=>({
+    "Fichier":b.fileName,"Date":b.date,"Agent":b.agent,"Nom":b.nom,"PrÃ©nom":b.prenom,"Matricule":b.matricule,"JS":b.js,
+    "PS rÃ©elle":b.psReal,"FS rÃ©elle":b.fsReal,
+    "Amplitude minutes":b.amplitudeMin,"Amplitude HH:MM":fmtMin(b.amplitudeMin),
+    "Coupure minutes":b.breakMin,"Coupure HH:MM":fmtMin(b.breakMin),
+    "Travail effectif minutes":b.effectiveMin,"Travail effectif HH:MM":fmtMin(b.effectiveMin),
+    "Heures de nuit minutes":b.nightMin,"Heures de nuit HH:MM":fmtMin(b.nightMin),
+    "Temps conduite minutes":bulletinDrivingMin(b.fileName),"Temps conduite HH:MM":fmtMin(bulletinDrivingMin(b.fileName)),
+    "Nombre de trains":bulletinTrainCount(b.fileName),"GÃ©nÃ©rÃ© le":b.generatedAt,"Statut":b.status,"Observation":b.obs
+  }));
+}
+
+function dailyExportData(){
+  return getDailySummary().map(g=>({
+    "Date":g.date,"Agent":g.agent,"Matricule":g.matricule,"JS":g.js,"Nombre de trains":g.count,
+    "Temps conduite":fmtMin(g.drivingMin),"Amplitude PS-FS":fmtMin(g.amplitudeMin),"Coupure":fmtMin(g.breakMin),
+    "Travail effectif":fmtMin(g.effectiveMin),"Heures de nuit":fmtMin(g.nightMin)
+  }));
+}
+
+function agentExportData(){
+  return getAgentSummary().map(g=>({
+    "Agent":g.agent,"Matricule":g.matricule,"Bulletins":g.bulletins,"Trains":g.trains,
+    "Temps conduite":fmtMin(g.drivingMin),"Amplitude PS-FS":fmtMin(g.amplitudeMin),"Coupure":fmtMin(g.breakMin),
+    "Travail effectif":fmtMin(g.effectiveMin),"Heures de nuit":fmtMin(g.nightMin)
+  }));
+}
+
+function exportExcel(){
+  if(!bulletins.length){alert("Importe au moins un bulletin avant lâ€™export.");return;}
+  if(!window.XLSX){alert("La librairie Excel nâ€™est pas chargÃ©e.");return;}
+  const XLSXLib=window.XLSX;
+  const wb=XLSXLib.utils.book_new();
+  const append=(name,data,widths)=>{
+    const ws=XLSXLib.utils.json_to_sheet(data);
+    ws["!cols"]=widths.map(w=>({wch:w}));
+    XLSXLib.utils.book_append_sheet(wb,ws,name);
+  };
+  append("Bulletins",bulletinExportData(),[34,12,24,18,18,12,10,10,10,16,14,16,14,20,18,18,16,20,18,18,14,20,12,35]);
+  const trainData=rows.map(r=>Object.fromEntries(exportHeaders().map(h=>[h,exportValue(r,h)])));
+  append("Trains",trainData,[34,12,24,18,18,12,10,12,20,20,15,10,10,14,14,10,12,14,30,12,16,16,18,18]);
+  append("SynthÃ¨se journÃ©es",dailyExportData(),[12,24,12,10,14,16,18,14,18,16]);
+  append("Cumuls agents",agentExportData(),[24,12,12,10,16,18,14,18,16]);
+  XLSXLib.writeFile(wb,"controle_bulletins_service_complet.xlsx");
+}
+
+function exportPDF(){
+  if(!bulletins.length){alert("Importe au moins un bulletin avant lâ€™export.");return;}
+  if(!window.jspdf?.jsPDF){alert("La librairie PDF nâ€™est pas chargÃ©e.");return;}
+  const {jsPDF}=window.jspdf;
+  const doc=new jsPDF({orientation:"landscape",unit:"mm",format:"a4"});
+  if(typeof doc.autoTable!=="function"){alert("Le module de tableaux PDF nâ€™est pas chargÃ©.");return;}
+  const totalDriving=rows.reduce((s,r)=>s+(Number(r.durationMin)||0),0);
+  const totalAmplitude=bulletins.reduce((s,b)=>s+(Number(b.amplitudeMin)||0),0);
+  const totalBreak=bulletins.reduce((s,b)=>s+(Number(b.breakMin)||0),0);
+  const totalEffective=bulletins.reduce((s,b)=>s+(Number(b.effectiveMin)||0),0);
+  const totalNight=bulletins.reduce((s,b)=>s+(Number(b.nightMin)||0),0);
+  const generated=new Date().toLocaleString("fr-FR");
+  const addHeader=title=>{
+    doc.setTextColor(0,92,80);doc.setFont("helvetica","bold");doc.setFontSize(15);doc.text(title,10,12);
+    doc.setTextColor(90,105,120);doc.setFont("helvetica","normal");doc.setFontSize(7);doc.text(`GÃ©nÃ©rÃ© le ${generated}`,287,12,{align:"right"});
+  };
+  const tableStyle={styles:{fontSize:6,cellPadding:1.5,overflow:"linebreak"},headStyles:{fillColor:[0,140,122],textColor:255},alternateRowStyles:{fillColor:[242,248,247]},margin:{left:8,right:8}};
+  addHeader("ContrÃ´le des Bulletins de Service - SynthÃ¨se complÃ¨te");
+  doc.setTextColor(30,42,48);doc.setFont("helvetica","normal");doc.setFontSize(9);
+  doc.text(`Bulletins : ${bulletins.length}   Trains : ${rows.length}   Conduite : ${fmtMin(totalDriving)}   Amplitude PS-FS : ${fmtMin(totalAmplitude)}   Coupures : ${fmtMin(totalBreak)}   Travail effectif : ${fmtMin(totalEffective)}   Nuit 22h-07h : ${fmtMin(totalNight)}`,10,20);
+  doc.autoTable({...tableStyle,startY:25,head:[["Date","Agent","Matricule","JS","PS","FS","Amplitude","Coupure","Travail effectif","Nuit","Conduite","Trains","Statut"]],body:bulletins.map(b=>[b.date,b.agent,b.matricule,b.js,b.psReal,b.fsReal,fmtMin(b.amplitudeMin),fmtMin(b.breakMin),fmtMin(b.effectiveMin),fmtMin(b.nightMin),fmtMin(bulletinDrivingMin(b.fileName)),bulletinTrainCount(b.fileName),b.status])});
+  doc.addPage("a4","landscape");addHeader("SynthÃ¨se par agent et par journÃ©e");
+  doc.autoTable({...tableStyle,startY:18,head:[["Date","Agent","Matricule","JS","Trains","Conduite","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"]],body:getDailySummary().map(g=>[g.date,g.agent,g.matricule,g.js,g.count,fmtMin(g.drivingMin),fmtMin(g.amplitudeMin),fmtMin(g.breakMin),fmtMin(g.effectiveMin),fmtMin(g.nightMin)])});
+  doc.addPage("a4","landscape");addHeader("Cumuls par agent");
+  doc.autoTable({...tableStyle,startY:18,head:[["Agent","Matricule","Bulletins","Trains","Conduite","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"]],body:getAgentSummary().map(g=>[g.agent,g.matricule,g.bulletins,g.trains,fmtMin(g.drivingMin),fmtMin(g.amplitudeMin),fmtMin(g.breakMin),fmtMin(g.effectiveMin),fmtMin(g.nightMin)])});
+  doc.addPage("a4","landscape");addHeader("DÃ©tail des trains");
+  doc.autoTable({...tableStyle,startY:18,head:[["Date","Agent","JS","Train","De","Ã€","DÃ©part","ArrivÃ©e","DurÃ©e","Nat","EM","Observation","Statut"]],body:rows.map(r=>[r.date,r.agent,r.js,r.trainNo,r.from,r.to,r.depTime,r.arrTime,fmtMin(r.durationMin),r.nat,r.em,r.obs,r.status])});
+  const pages=doc.getNumberOfPages();
+  for(let page=1;page<=pages;page++){doc.setPage(page);doc.setTextColor(100);doc.setFontSize(7);doc.text(`Page ${page}/${pages}`,287,205,{align:"right"});}
+  doc.save("controle_bulletins_service_complet.pdf");
 }
 
 function exportJSON(){
-  downloadBlob(JSON.stringify(rows,null,2), "sauvegarde_temps_conduite.json", "application/json;charset=utf-8");
+  downloadBlob(JSON.stringify({bulletins,trains:rows},null,2), "sauvegarde_controle_bulletins.json", "application/json;charset=utf-8");
 }
 
 function exportHeaders(){
-  return ["Fichier","Date","Agent","Nom","Prénom","Matricule","JS","Train","De","À","Via","H départ","H arrivée","Durée minutes","Durée HH:MM","Nat","EM","Code composition","Observation","Statut"];
+  return ["Fichier","Date","Agent","Nom","PrÃ©nom","Matricule","JS","Train","De","Ã€","Via","H dÃ©part","H arrivÃ©e","DurÃ©e minutes","DurÃ©e HH:MM","Nat","EM","Code composition","Observation","Statut","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"];
 }
 function exportValue(r,h){
+  const b=bulletins.find(x=>x.fileName===r.fileName)||{};
   const map = {
-    "Fichier":r.fileName, "Date":r.date, "Agent":r.agent, "Nom":r.nom, "Prénom":r.prenom,
-    "Matricule":r.matricule, "JS":r.js, "Train":r.trainNo, "De":r.from, "À":r.to, "Via":r.via,
-    "H départ":r.depTime, "H arrivée":r.arrTime, "Durée minutes":r.durationMin, "Durée HH:MM":fmtMin(r.durationMin),
-    "Nat":r.nat, "EM":r.em, "Code composition":r.compo, "Observation":r.obs, "Statut":r.status
+    "Fichier":r.fileName, "Date":r.date, "Agent":r.agent, "Nom":r.nom, "PrÃ©nom":r.prenom,
+    "Matricule":r.matricule, "JS":r.js, "Train":r.trainNo, "De":r.from, "Ã€":r.to, "Via":r.via,
+    "H dÃ©part":r.depTime, "H arrivÃ©e":r.arrTime, "DurÃ©e minutes":r.durationMin, "DurÃ©e HH:MM":fmtMin(r.durationMin),
+    "Nat":r.nat, "EM":r.em, "Code composition":r.compo, "Observation":r.obs, "Statut":r.status,
+    "Amplitude PS-FS":fmtMin(b.amplitudeMin),"Coupure":fmtMin(b.breakMin),"Travail effectif":fmtMin(b.effectiveMin),"Heures de nuit":fmtMin(b.nightMin)
   };
   return map[h] ?? "";
 }
