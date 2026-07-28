@@ -1,5 +1,6 @@
 
 
+
 <!DOCTYPE html>
 <!-- Version autonome : biblioth&#xE8;ques PDF et exports int&#xE9;gr&#xE9;es -->
 <html lang="fr">
@@ -168,7 +169,7 @@ pre{
     <div id="pdfWarning" class="notice" style="display:none">
       La librairie PDF n&#x2019;est pas charg&#xE9;e. Ouvre ce fichier avec internet actif au premier lancement, ou remplace le lien PDF.js par une version locale.
     </div>
-    <p class="small required-note">Avant utilisation en paie, toutes les lignes doivent être au statut « OK ». Un document incompatible, une heure manquante ou une incohérence bloque l’export de paie.</p>
+    <p class="small required-note">Les lignes incertaines restent signalées « À vérifier », mais elles peuvent tout de même être exportées. Contrôle ces alertes avant utilisation en paie.</p>
   </section>
 
   <section class="card">
@@ -1029,13 +1030,13 @@ function render(){
     tbody.appendChild(tr);
   });
 
-  const eligibleFiles=new Set(bulletins.filter(b=>b.payrollEligible).map(b=>b.fileName));
+  const eligibleFiles=new Set(bulletins.filter(b=>b.compatible).map(b=>b.fileName));
   const total=rows.filter(r=>eligibleFiles.has(r.fileName)).reduce((s,r)=>s+(Number(r.durationMin)||0),0);
   const warnings = rows.filter(r => r.status !== "OK" || !r.trainNo || !r.depTime || !r.arrTime).length + bulletins.filter(b=>b.status!=="OK").length;
   document.getElementById("kpiFiles").textContent = bulletins.length;
   document.getElementById("kpiTrains").textContent = rows.length;
   document.getElementById("kpiDriving").textContent = fmtMin(total);
-  const eligible=bulletins.filter(b=>b.payrollEligible);
+  const eligible=bulletins.filter(b=>b.compatible);
   document.getElementById("kpiAmplitude").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.amplitudeMin)||0),0));
   document.getElementById("kpiEffective").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.effectiveMin)||0),0));
   document.getElementById("kpiNight").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.nightMin)||0),0));
@@ -1093,7 +1094,7 @@ function renderBulletins(){
 function getDailySummary(){
   const groups = new Map();
   for(const b of bulletins){
-    if(!b.payrollEligible)continue;
+    if(!b.compatible)continue;
     const key = [b.date,b.agent,b.matricule,b.js].join("|");
     if(!groups.has(key)) groups.set(key, {date:b.date,agent:b.agent,matricule:b.matricule,js:b.js,count:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
     const g = groups.get(key);
@@ -1110,7 +1111,7 @@ function getDailySummary(){
 function getAgentSummary(){
   const groups=new Map();
   for(const b of bulletins){
-    if(!b.payrollEligible)continue;
+    if(!b.compatible)continue;
     const key=[b.agent,b.matricule].join("|");
     if(!groups.has(key)) groups.set(key,{agent:b.agent,matricule:b.matricule,bulletins:0,trains:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
     const g=groups.get(key);
@@ -1234,7 +1235,7 @@ function removeBulletin(idx){
 function clearAll(){ rows=[]; bulletins=[]; rawTexts=[]; fileInput.value=""; render(); }
 
 function exportCSV(){
-  if(!assertPayrollReady())return;
+  warnExportErrors();
   const headers = exportHeaders();
   const lines = [headers.join(";")];
   rows.forEach(r => lines.push(headers.map(h => csvCell(exportValue(r,h))).join(";")));
@@ -1274,7 +1275,7 @@ function agentExportData(){
 
 function exportExcel(){
   if(!bulletins.length){alert("Importe au moins un bulletin avant l\u2019export.");return;}
-  if(!assertPayrollReady())return;
+  warnExportErrors();
   if(!window.XLSX){alert("La librairie Excel n\u2019est pas charg\u00e9e.");return;}
   const XLSXLib=window.XLSX;
   const wb=XLSXLib.utils.book_new();
@@ -1293,7 +1294,7 @@ function exportExcel(){
 
 function exportPDF(){
   if(!bulletins.length){alert("Importe au moins un bulletin avant l\u2019export.");return;}
-  if(!assertPayrollReady())return;
+  warnExportErrors();
   if(!window.jspdf?.jsPDF){alert("La librairie PDF n\u2019est pas charg\u00e9e.");return;}
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({orientation:"landscape",unit:"mm",format:"a4"});
@@ -1328,15 +1329,17 @@ function exportJSON(){
   downloadBlob(JSON.stringify({bulletins,trains:rows},null,2), "sauvegarde_controle_bulletins.json", "application/json;charset=utf-8");
 }
 
-function assertPayrollReady(){
+function warnExportErrors(){
   const invalid=bulletins.filter(b=>!b.payrollEligible);
   const badRows=rows.filter(r=>r.status!=="OK");
-  if(!bulletins.length){alert("Importe au moins un bulletin avant l’export.");return false;}
   if(invalid.length||badRows.length){
-    alert(`Export de paie bloqué : ${invalid.length} bulletin(s) et ${badRows.length} ligne(s) train restent à vérifier. Corrige les champs signalés ou supprime les documents incompatibles.`);
-    return false;
+    const notice=document.getElementById("pdfWarning");
+    if(notice){
+      notice.style.display="block";
+      notice.className="notice";
+      notice.textContent=`Export effectué avec ${invalid.length} bulletin(s) et ${badRows.length} ligne(s) train à vérifier. Les statuts et observations sont conservés dans l’export.`;
+    }
   }
-  return true;
 }
 
 function exportHeaders(){
