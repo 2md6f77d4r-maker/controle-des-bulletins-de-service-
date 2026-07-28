@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <!-- Version autonome : biblioth&#xE8;ques PDF et exports int&#xE9;gr&#xE9;es -->
 <html lang="fr">
@@ -135,6 +136,11 @@ pre{
   border-radius:12px;
   margin-top:12px;
 }
+.notice.error{background:#fff1f0;color:#912018;border-color:#f7b5ae}
+.notice.success{background:#eef8f6;color:#005c50;border-color:#aadbd1}
+.progress{height:9px;background:#dce5e4;border-radius:999px;overflow:hidden;margin-top:10px}
+.progress>span{display:block;height:100%;width:0;background:var(--primary);transition:width .2s}
+.required-note{border-left:4px solid var(--warn);padding-left:10px}
 @media(max-width:900px){
   .grid{grid-template-columns:repeat(2,1fr)}
   header{position:static}
@@ -156,11 +162,13 @@ pre{
       <p>D&#xE9;pose un ou plusieurs PDF de Bulletin de Service ici</p>
       <button class="btn" onclick="document.getElementById('files').click()">Choisir des PDF</button>
       <input id="files" type="file" accept="application/pdf" multiple>
-      <p class="small">Le calcul utilise H d&#xE9;p. et H arr. du tableau Train. Tu peux corriger manuellement les lignes avant export.</p>
+      <p class="small">Lecture directe des PDF numériques et OCR automatique des PDF scannés ou transformés en image. Les données incertaines restent signalées et ne sont jamais remplacées silencieusement par 00:00.</p>
+      <div class="progress" aria-hidden="true"><span id="readProgress"></span></div>
     </div>
     <div id="pdfWarning" class="notice" style="display:none">
       La librairie PDF n&#x2019;est pas charg&#xE9;e. Ouvre ce fichier avec internet actif au premier lancement, ou remplace le lien PDF.js par une version locale.
     </div>
+    <p class="small required-note">Avant utilisation en paie, toutes les lignes doivent être au statut « OK ». Un document incompatible, une heure manquante ou une incohérence bloque l’export de paie.</p>
   </section>
 
   <section class="card">
@@ -197,7 +205,15 @@ pre{
             <th>Agent</th>
             <th>Matricule</th>
             <th>JS</th>
+            <th>Résidence</th>
+            <th>Roulement</th>
+            <th>RHR</th>
+            <th>2 BS</th>
+            <th>Lecture</th>
+            <th>Confiance</th>
+            <th>PS prévue</th>
             <th>PS r&#xE9;elle</th>
+            <th>FS prévue</th>
             <th>FS r&#xE9;elle</th>
             <th>Amplitude PS-FS</th>
             <th>Coupure</th>
@@ -205,6 +221,7 @@ pre{
             <th>Heures de nuit</th>
             <th>Temps conduite</th>
             <th>Trains</th>
+            <th>Contrôles / erreurs</th>
             <th>Action</th>
           </tr>
         </thead>
@@ -228,12 +245,17 @@ pre{
             <th>Train</th>
             <th>De</th>
             <th>&#xC0;</th>
+            <th>Via</th>
+            <th>Évo dép.</th>
             <th>H d&#xE9;p.</th>
             <th>H arr.</th>
+            <th>Évo arr.</th>
             <th>Dur&#xE9;e</th>
             <th>Nat</th>
             <th>EM</th>
             <th>Code compo</th>
+            <th>Poste</th>
+            <th>Autre agent</th>
             <th>Obs</th>
             <th>Action</th>
           </tr>
@@ -310,7 +332,13 @@ const PDFJS_SOURCES=[
     worker:"https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js"
   }
 ];
+const OCR_SOURCES=[
+  "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js",
+  "https://unpkg.com/tesseract.js@5.1.1/dist/tesseract.min.js"
+];
 let pdfJsLoadPromise=null;
+let ocrLoadPromise=null;
+let ocrWorker=null;
 let embeddedPdfWorkerUrl="";
 let embeddedPdfWorkerBytes=null;
 
@@ -391,6 +419,41 @@ async function ensurePdfJs(){
 
 if(window.pdfjsLib)configurePdfJs(PDFJS_SOURCES[1].worker);
 
+async function ensureOcr(){
+  if(window.Tesseract)return true;
+  if(ocrLoadPromise)return ocrLoadPromise;
+  ocrLoadPromise=(async()=>{
+    for(const source of OCR_SOURCES){
+      try{
+        await loadExternalScript(source);
+        if(window.Tesseract)return true;
+      }catch(error){
+        console.warn("Chargement OCR impossible depuis",source,error);
+      }
+    }
+    return false;
+  })();
+  const loaded=await ocrLoadPromise;
+  if(!loaded)ocrLoadPromise=null;
+  return loaded;
+}
+
+async function getOcrWorker(){
+  if(ocrWorker)return ocrWorker;
+  if(!await ensureOcr())throw new Error("Le module OCR n’a pas pu être chargé. Vérifie la connexion internet.");
+  ocrWorker=await window.Tesseract.createWorker("eng",1,{
+    logger:m=>{
+      if(typeof m.progress==="number")setReadProgress(Math.max(8,Math.round(m.progress*88)),`OCR : ${String(m.status||"analyse").replace(/_/g," ")}`);
+    }
+  });
+  await ocrWorker.setParameters({
+    tessedit_pageseg_mode:window.Tesseract.PSM.AUTO,
+    preserve_interword_spaces:"1",
+    user_defined_dpi:"200"
+  });
+  return ocrWorker;
+}
+
 let rows = [];
 let bulletins = [];
 let rawTexts = [];
@@ -410,14 +473,10 @@ fileInput.addEventListener("change", e => handleFiles(e.target.files));
 async function handleFiles(fileList){
   const notice=document.getElementById("pdfWarning");
   notice.style.display="block";
-  notice.style.background="#eef8f6";
-  notice.style.color="#005c50";
-  notice.style.borderColor="#aadbd1";
+  notice.className="notice success";
   notice.textContent="Chargement du lecteur PDF...";
   if(!await ensurePdfJs()){
-    notice.style.background="#fff7ed";
-    notice.style.color="#9a3412";
-    notice.style.borderColor="#fed7aa";
+    notice.className="notice error";
     notice.textContent="Impossible de charger le lecteur PDF. V\u00e9rifie la connexion internet puis recharge la page.";
     return;
   }
@@ -428,11 +487,15 @@ async function handleFiles(fileList){
   }
   notice.textContent=`Lecture de ${files.length} PDF en cours...`;
   let imported=0;
-  for(const file of files){
+  const failures=[];
+  for(let fileIndex=0;fileIndex<files.length;fileIndex++){
+    const file=files[fileIndex];
     try{
-      const text = await extractPdfText(file);
-      rawTexts.push("===== " + file.name + " =====\n" + text);
-      const parsed = parseBulletin(text, file.name);
+      setReadProgress(Math.round(fileIndex/files.length*100),`Lecture de ${file.name}`);
+      const extracted=await extractPdfData(file);
+      rawTexts=rawTexts.filter(t=>!t.startsWith("===== "+file.name+" ====="));
+      rawTexts.push("===== "+file.name+" =====\nMode : "+extracted.source+(extracted.confidence!=null?" - confiance OCR : "+Math.round(extracted.confidence)+" %":"")+"\n"+extracted.text);
+      const parsed=parseBulletin(extracted,file.name);
       // Un m\u00eame fichier r\u00e9import\u00e9 remplace sa pr\u00e9c\u00e9dente lecture pour \u00e9viter les doubles cumuls.
       rows = rows.filter(r => r.fileName !== file.name);
       bulletins = bulletins.filter(b => b.fileName !== file.name);
@@ -441,99 +504,309 @@ async function handleFiles(fileList){
       imported++;
     }catch(err){
       console.error(err);
-      notice.style.background="#fff7ed";
-      notice.style.color="#9a3412";
-      notice.style.borderColor="#fed7aa";
-      notice.textContent="Erreur de lecture de "+file.name+" : "+err.message;
+      failures.push(file.name+" : "+err.message);
     }
   }
   render();
   fileInput.value="";
+  setReadProgress(100,"Lecture terminée");
   if(imported===files.length){
-    notice.style.background="#eef8f6";
-    notice.style.color="#005c50";
-    notice.style.borderColor="#aadbd1";
-    notice.textContent=`${imported} PDF import\u00e9${imported>1?"s":""} avec succ\u00e8s.`;
+    notice.className="notice success";
+    notice.textContent=`${imported} PDF import\u00e9${imported>1?"s":""} avec succès. Vérifie les statuts avant export.`;
+  }else{
+    notice.className="notice error";
+    notice.textContent=`${imported}/${files.length} PDF importés. Échecs : ${failures.join(" | ")}`;
   }
 }
 
-async function extractPdfText(file){
+function setReadProgress(percent,label){
+  const bar=document.getElementById("readProgress");
+  if(bar)bar.style.width=Math.max(0,Math.min(100,Number(percent)||0))+"%";
+  const notice=document.getElementById("pdfWarning");
+  if(notice&&label)notice.textContent=label;
+}
+
+async function extractPdfData(file){
   const buffer = await file.arrayBuffer();
-  const pdf = await window.pdfjsLib.getDocument({data: buffer}).promise;
+  const pdf = await window.pdfjsLib.getDocument({data: buffer,disableFontFace:false}).promise;
   let full = "";
+  const pages=[];
   for(let p=1; p<=pdf.numPages; p++){
     const page = await pdf.getPage(p);
     const content = await page.getTextContent();
+    const viewport=page.getViewport({scale:1});
     const items = content.items.map(i => ({
-      str: i.str,
-      x: Math.round(i.transform[4]),
-      y: Math.round(i.transform[5])
-    }));
-    items.sort((a,b) => b.y - a.y || a.x - b.x);
+      text:i.str,
+      x:i.transform[4],
+      y:viewport.height-i.transform[5],
+      width:Math.abs(i.width||0),
+      height:Math.abs(i.height||0)
+    })).filter(i=>i.text&&i.text.trim());
+    items.sort((a,b)=>a.y-b.y||a.x-b.x);
     let currentY = null, line = [];
+    const pageLines=[];
     for(const it of items){
       if(currentY === null || Math.abs(it.y - currentY) <= 3){
-        line.push(it.str);
+        line.push(it);
         currentY = currentY ?? it.y;
       }else{
-        full += line.join(" ").replace(/\s+/g," ").trim() + "\n";
-        line = [it.str];
+        const lineText=line.map(x=>x.text).join(" ").replace(/\s+/g," ").trim();
+        if(lineText){full+=lineText+"\n";pageLines.push({text:lineText,words:line});}
+        line=[it];
         currentY = it.y;
       }
     }
-    if(line.length) full += line.join(" ").replace(/\s+/g," ").trim() + "\n";
+    if(line.length){
+      const lineText=line.map(x=>x.text).join(" ").replace(/\s+/g," ").trim();
+      if(lineText){full+=lineText+"\n";pageLines.push({text:lineText,words:line});}
+    }
+    pages.push({number:p,width:viewport.width,height:viewport.height,lines:pageLines,words:items});
     full += "\n";
   }
-  return full;
+  const firstText=pages[0]?.lines.map(l=>l.text).join("\n")||"";
+  if(firstText.length>=120&&looksLikeServiceBulletin(firstText)){
+    return {text:full,pages,source:"Texte PDF",confidence:null};
+  }
+
+  setReadProgress(5,"PDF image détecté : démarrage de l’OCR");
+  const page=await pdf.getPage(1);
+  let canvas=await renderPageToCanvas(page,2.8);
+  if(canvas.height>canvas.width*1.08)canvas=rotateCanvas(canvas,90);
+  let ocr=await recognizeCanvas(canvas);
+  if(!looksLikeServiceBulletin(ocr.text)&&/bulletin[\s_-]+de[\s_-]+service/i.test(file.name)){
+    const retry=await recognizeCanvas(rotateCanvas(canvas,180));
+    if(scoreServiceText(retry.text)>scoreServiceText(ocr.text))ocr=retry;
+  }
+  const ocrPage={number:1,width:canvas.width,height:canvas.height,lines:tsvToLines(ocr.tsv),words:tsvToWords(ocr.tsv)};
+  return {text:ocr.text,pages:[ocrPage],source:"OCR image",confidence:ocr.confidence};
 }
 
-function parseBulletin(text, fileName){
-  const clean = text.replace(/\uFFFE/g, "-").replace(/\s+/g, " ").trim();
-  const date = matchOne(clean, /Date de service\s*:\s*([0-9]{2}\/[0-9]{2}\/[0-9]{4})/i) || matchOne(clean, /Date\s*:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})/i);
-  const matricule = matchOne(clean, /Matricule\s*:\s*([0-9A-Za-z]+)/i);
-  const js = matchOne(clean, /JS\s*:\s*([A-Z0-9_-]+)/i);
-  let agent = matchOne(clean, /Agent\s*:\s*([A-Za-z\u00c0-\u00ff' -]+?)\s*-\s*Matricule/i);
-  const nom = matchOne(clean, /Nom\s*:\s*([A-Za-z\u00c0-\u00ff' -]+?)\s+Date\s*:/i);
-  const prenom = matchOne(clean, /Pr\u00e9nom\s*:\s*([A-Za-z\u00c0-\u00ff' -]+?)\s+Heure de PS/i);
-  if(!agent && (nom || prenom)) agent = [nom, prenom].filter(Boolean).join(" ");
+async function renderPageToCanvas(page,scale){
+  const viewport=page.getViewport({scale});
+  const canvas=document.createElement("canvas");
+  canvas.width=Math.ceil(viewport.width);
+  canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext("2d",{alpha:false,willReadFrequently:true});
+  ctx.fillStyle="#fff";
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  await page.render({canvasContext:ctx,viewport,background:"white"}).promise;
+  return canvas;
+}
 
-  const psMatch = clean.match(/Heure de PS pr\u00e9vue\s*:\s*([0-2]?\d:[0-5]\d)\s+R\u00e9elle\s*:\s*([0-2]?\d:[0-5]\d)/i);
-  const fsMatch = clean.match(/Heure de FS pr\u00e9vue\s*:\s*([0-2]?\d:[0-5]\d)\s+R\u00e9elle\s*:\s*([0-2]?\d:[0-5]\d)/i);
-  const psReal = psMatch?.[2] || "";
-  const fsReal = fsMatch?.[2] || "";
-  const generatedAt = matchOne(clean, /G\u00e9n\u00e9r\u00e9 le\s*([^\u00b7]+?)(?=\s*[\u00b7|]\s*Amplitude|\s+Amplitude)/i);
-  const amplitudeText = matchOne(clean, /Amplitude\s+PS\s+r[\u00e9e]elle\s*[-\u2013\u2014]\s*FS\s+r[\u00e9e]elle\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
-  const breakText = matchOne(clean, /Coupure\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
-  const effectiveText = matchOne(clean, /Travail\s+effectif\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
-  const nightText = matchOne(clean, /Heures\s+de\s+nuit(?:\s+22h00\s*[-\u2013\u2014]\s*07h00)?\s*:\s*([0-9]{1,3}\s*[h:]\s*[0-9]{2})/i);
+function rotateCanvas(source,degrees){
+  const swap=Math.abs(degrees)%180===90;
+  const out=document.createElement("canvas");
+  out.width=swap?source.height:source.width;
+  out.height=swap?source.width:source.height;
+  const ctx=out.getContext("2d",{alpha:false,willReadFrequently:true});
+  ctx.fillStyle="#fff";
+  ctx.fillRect(0,0,out.width,out.height);
+  ctx.translate(out.width/2,out.height/2);
+  ctx.rotate(degrees*Math.PI/180);
+  ctx.drawImage(source,-source.width/2,-source.height/2);
+  return out;
+}
 
-  let amplitudeMin = parseDurationMinutes(amplitudeText);
-  const breakMin = parseDurationMinutes(breakText);
-  let effectiveMin = parseDurationMinutes(effectiveText);
-  let nightMin = parseDurationMinutes(nightText);
+async function recognizeCanvas(canvas){
+  const worker=await getOcrWorker();
+  const result=await worker.recognize(canvas,{}, {text:true,tsv:true});
+  return {
+    text:String(result.data.text||""),
+    tsv:String(result.data.tsv||""),
+    confidence:Number.isFinite(result.data.confidence)?result.data.confidence:null
+  };
+}
+
+function tsvToWords(tsv){
+  const out=[];
+  const lines=String(tsv||"").split(/\r?\n/);
+  for(let i=1;i<lines.length;i++){
+    const c=lines[i].split("\t");
+    if(c.length<12||c[0]!=="5")continue;
+    const text=c.slice(11).join("\t").trim();
+    if(!text)continue;
+    out.push({
+      text,
+      x:Number(c[6])||0,y:Number(c[7])||0,
+      width:Number(c[8])||0,height:Number(c[9])||0,
+      confidence:Number(c[10]),
+      lineKey:[c[1],c[2],c[3],c[4]].join("-")
+    });
+  }
+  return out;
+}
+
+function tsvToLines(tsv){
+  const groups=new Map();
+  for(const word of tsvToWords(tsv)){
+    if(!groups.has(word.lineKey))groups.set(word.lineKey,[]);
+    groups.get(word.lineKey).push(word);
+  }
+  return [...groups.values()].map(words=>{
+    words.sort((a,b)=>a.x-b.x);
+    return {text:words.map(w=>w.text).join(" "),words};
+  });
+}
+
+function looksLikeServiceBulletin(text){
+  const n=foldText(text);
+  return /bulletin de service agent de conduite/.test(n)&&/heure de ps/.test(n)&&/(matricule|matricuie)/.test(n);
+}
+
+function scoreServiceText(text){
+  const n=foldText(text);
+  return ["bulletin de service","agent de conduite","heure de ps","heure de fs","matricule","train","travail effectif"].reduce((s,k)=>s+(n.includes(k)?1:0),0);
+}
+
+function parseBulletin(extracted,fileName){
+  const text=extracted.text||"";
+  const clean=text.replace(/\uFFFE/g,"-").replace(/[–—·|]/g," - ").replace(/[ \t]+/g," ").trim();
+  const folded=foldText(clean);
+  const fileMeta=parseFileNameMeta(fileName);
+  const compatible=looksLikeServiceBulletin(clean);
+
+  let date=normalizeDate(matchOne(folded,/date de service\s*:\s*([0-9]{2}[\/.-][0-9]{2}[\/.-][0-9]{2,4})/i)||matchOne(folded,/date\s*:\s*([0-9]{4}[\/.-][0-9]{2}[\/.-][0-9]{2})/i));
+  let matricule=matchOne(folded,/matricul[e|i]+\s*:\s*([0-9a-z]{3,12})/i);
+  let js=matchOne(folded,/\bjs\s*:\s*([a-z0-9_-]{2,15})/i).toUpperCase();
+  let agent=titlePerson(matchOne(folded,/agent\s*:\s*([a-z' -]+?)\s*-\s*matricul/i));
+  const nom=titlePerson(matchOne(folded,/nom\s*:\s*([a-z' -]+?)\s+(?:date|residence)\s*:/i));
+  const prenom=titlePerson(matchOne(folded,/prenom\s*:\s*([a-z' -]+?)\s+heure de ps/i));
+  if(!agent&&(nom||prenom))agent=[nom,prenom].filter(Boolean).join(" ");
+  date=date||fileMeta.date;
+  matricule=matricule||fileMeta.matricule;
+  js=js||fileMeta.js;
+  agent=agent||fileMeta.agent;
+
+  const ps=matchServiceTimes(folded,"ps");
+  const fs=matchServiceTimes(folded,"fs");
+  const psPlanned=ps.planned,psReal=ps.real,fsPlanned=fs.planned,fsReal=fs.real;
+  const generatedAt=matchOne(folded,/genere le\s*([0-9\/.-]+\s+[0-9:]+)/i);
+  const residence=normalizeResidence(matchOne(folded,/residence\s*[:;]\s*([a-z0-9' -]+?)(?=\s+(?:prenom|js|matricule|heure|rhr|roulement)|$)/i));
+  let roulement=titlePerson(matchOne(folded,/roulement\s*[:;]\s*([a-z0-9' -]+?)(?=\s+(?:rhr|temps|train|genere)|$)/i));
+  if(/^rhr[o0]?$/i.test(roulement))roulement="";
+  const rhr=/\brhr\s*(?:☑|x|oui|1)\b/i.test(clean);
+  const twoBs=/\b2\s*bs\s*(?:☑|x|oui|1)\b/i.test(clean);
+
+  let amplitudeMin=parseDurationMinutes(matchDurationAfter(folded,/amplitude\s+ps\s+reell[a-z]*\s*-\s*fs\s+reell[a-z]*/i));
+  let breakMin=parseDurationMinutes(matchDurationAfter(folded,/(?:temps de )?coupure/i));
+  let effectiveMin=parseDurationMinutes(matchDurationAfter(folded,/travail\s+effect[a-z]*/i));
+  let nightMin=parseDurationMinutes(matchDurationAfter(folded,/heures?\s+de\s+nuit(?:\s+22h?00\s*-\s*07h?00)?/i));
   if(amplitudeMin == null && psReal && fsReal) amplitudeMin = diffMinutes(psReal, fsReal);
   if(effectiveMin == null && amplitudeMin != null) effectiveMin = Math.max(0, amplitudeMin - (breakMin || 0));
   if(nightMin == null && psReal && fsReal) nightMin = nightMinutesBetween(psReal, fsReal);
 
-  const page1 = text.split(/R\u00e9gularit\u00e9|Signalisation|Conditions atmosph\u00e9riques/i)[0];
-  const trains = parseTrainLines(page1, {fileName, date, agent, nom, prenom, matricule, js});
-  const missing = [];
+  const base={fileName,date,agent,nom,prenom,matricule,js};
+  let trains=parseTrainLayout(extracted.pages?.[0],base);
+  if(!trains.length)trains=parseTrainLines(clean.split(/regularite|signalisation|conditions atmospheriques/i)[0],base);
+  trains=dedupeTrains(trains);
+
+  const missing=[];
+  const errors=[];
+  if(!compatible)errors.push("Document incompatible : ce fichier n’est pas un Bulletin de Service Agent de Conduite");
+  if(!date)missing.push("date");
+  if(!agent)missing.push("agent");
+  if(!matricule)missing.push("matricule");
+  if(!js)missing.push("JS");
+  if(!psReal)missing.push("PS réelle");
+  if(!fsReal)missing.push("FS réelle");
   if(amplitudeMin == null) missing.push("amplitude PS-FS");
   if(breakMin == null) missing.push("coupure");
   if(effectiveMin == null) missing.push("travail effectif");
   if(nightMin == null) missing.push("heures de nuit");
+  if(missing.length)errors.push("Valeurs non lues : "+missing.join(", "));
+  const expectedAmplitude=psReal&&fsReal?diffMinutes(psReal,fsReal):null;
+  if(amplitudeMin!=null&&expectedAmplitude!=null&&Math.abs(amplitudeMin-expectedAmplitude)>2)errors.push(`Amplitude incohérente : bulletin ${fmtMin(amplitudeMin)}, calcul PS-FS ${fmtMin(expectedAmplitude)}`);
+  if(effectiveMin!=null&&amplitudeMin!=null&&breakMin!=null&&Math.abs(effectiveMin-(amplitudeMin-breakMin))>2)errors.push("Travail effectif incohérent avec amplitude - coupure");
+  if(fileMeta.matricule&&matricule&&fileMeta.matricule!==matricule)errors.push(`Matricule différent du nom de fichier (${fileMeta.matricule})`);
+  if(fileMeta.js&&js&&fileMeta.js!==js)errors.push(`JS différente du nom de fichier (${fileMeta.js})`);
+  if(extracted.source==="OCR image"&&extracted.confidence!=null&&extracted.confidence<65)errors.push(`Confiance OCR faible (${Math.round(extracted.confidence)} %)`);
+  const trainErrors=trains.filter(t=>t.status!=="OK");
+  if(trainErrors.length)errors.push(`${trainErrors.length} train(s) avec une donnée horaire à vérifier`);
+  const drivingMin=trains.reduce((s,t)=>s+(Number(t.durationMin)||0),0);
+  if(effectiveMin!=null&&drivingMin>effectiveMin+2)errors.push("Temps de conduite supérieur au travail effectif");
+  const status=errors.length?"À vérifier":"OK";
   const bulletin = {
     id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
-    fileName,date,agent,nom,prenom,matricule,js,psReal,fsReal,generatedAt,
-    amplitudeMin:amplitudeMin ?? 0,
-    breakMin:breakMin ?? 0,
-    effectiveMin:effectiveMin ?? 0,
-    nightMin:nightMin ?? 0,
+    fileName,date,agent,nom,prenom,matricule,js,residence,roulement,rhr,twoBs,
+    psPlanned,psReal,fsPlanned,fsReal,generatedAt,
+    amplitudeMin,breakMin,effectiveMin,nightMin,
+    extractionSource:extracted.source,
+    ocrConfidence:extracted.confidence,
+    compatible,
+    payrollEligible:compatible&&status==="OK",
     metricsComplete:missing.length===0,
-    status:missing.length?"\u00c0 v\u00e9rifier":"OK",
-    obs:missing.length?"Valeurs non lues : "+missing.join(", "):""
+    status,
+    obs:errors.join(" | ")
   };
   return {trains,bulletin};
+}
+
+function parseTrainLayout(page,base){
+  if(!page?.lines?.length||!page.width)return [];
+  const out=[];
+  const headerLine=page.lines.find(line=>/\btrain\s*n/i.test(foldText(line.text)));
+  if(!headerLine)return out;
+  const headerY=Math.min(...headerLine.words.map(w=>Number(w.y)||0));
+  for(const line of page.lines){
+    const lineY=Math.min(...(line.words||[]).map(w=>Number(w.y)||0));
+    if(!Number.isFinite(lineY)||lineY<=headerY+5||lineY>=page.height*0.82)continue;
+    if(/genere|amplitude|heures? de nuit|frh-f/i.test(foldText(line.text)))continue;
+    const trainWord=line.words?.find(w=>/^\d{5,8}$/.test(normalizeOcrDigits(w.text))&&wordCenter(w)/page.width<0.12);
+    if(!trainWord)continue;
+    const cells=Array.from({length:14},()=>[]);
+    for(const word of line.words){
+      const ratio=wordCenter(word)/page.width;
+      const index=Math.max(0,Math.min(13,Math.floor((ratio-0.027)/0.068)));
+      cells[index].push(word.text);
+    }
+    const cell=i=>cells[i].join(" ").trim();
+    const depTime=normalizeClock(cell(5));
+    const arrTime=normalizeClock(cell(6));
+    const durationMin=depTime&&arrTime?diffMinutes(depTime,arrTime):null;
+    const issues=[];
+    if(!depTime)issues.push("heure de départ absente ou illisible");
+    if(!arrTime)issues.push("heure d’arrivée absente ou illisible");
+    if(durationMin!=null&&durationMin>8*60)issues.push("durée de conduite supérieure à 8 h");
+    out.push(makeTrain(base,{
+      trainNo:normalizeOcrDigits(cell(0)).match(/\d{5,8}/)?.[0]||normalizeOcrDigits(trainWord.text),
+      from:cleanPlace(cell(1)),
+      to:cleanPlace(cell(2)),
+      via:cleanPlace(cell(3)),
+      evoDep:cell(4),
+      depTime,
+      arrTime,
+      evoArr:cell(7),
+      nat:cell(8),
+      em:normalizeEm(cell(9)),
+      compo:normalizeComposition(cell(10)),
+      poste:cell(11),
+      obs:cell(12),
+      otherAgent:cell(13),
+      durationMin:durationMin!=null&&durationMin<=8*60?durationMin:null,
+      issues
+    }));
+  }
+  return out;
+}
+
+function wordCenter(word){
+  return (Number(word.x)||0)+(Number(word.width)||0)/2;
+}
+
+function makeTrain(base,data){
+  const issues=data.issues||[];
+  return {
+    id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),
+    status:issues.length?"À vérifier":"OK",
+    fileName:base.fileName,
+    date:base.date||"",agent:base.agent||"",nom:base.nom||"",prenom:base.prenom||"",
+    matricule:base.matricule||"",js:base.js||"",
+    trainNo:data.trainNo||"",from:data.from||"",to:data.to||"",via:data.via||"",
+    evoDep:data.evoDep||"",depTime:data.depTime||"",arrTime:data.arrTime||"",evoArr:data.evoArr||"",
+    durationMin:data.durationMin,
+    nat:data.nat||"",em:data.em||"",compo:data.compo||"",poste:data.poste||"",
+    obs:[data.obs,...issues].filter(Boolean).join(" | "),otherAgent:data.otherAgent||""
+  };
 }
 
 function parseTrainLines(pageText, base){
@@ -549,44 +822,39 @@ function parseTrainLines(pageText, base){
     let rest = m[2];
 
     const times = [...rest.matchAll(/\b([01]?\d|2[0-3]):([0-5]\d)\b/g)].map(x => x[0]);
-    if(times.length < 2) continue;
+    if(!times.length) continue;
 
-    const depTime = times[0];
-    const arrTime = times[1];
-    const beforeTime = rest.slice(0, rest.indexOf(depTime)).trim();
-    const afterArr = rest.slice(rest.indexOf(arrTime) + arrTime.length).trim();
+    const depTime=times.length>=2?times[0]:"";
+    const arrTime=times.length>=2?times[1]:times[0];
+    const firstTime=times[0];
+    const lastTime=times[times.length-1];
+    const beforeTime=rest.slice(0,rest.indexOf(firstTime)).trim();
+    const afterArr=rest.slice(rest.indexOf(lastTime)+lastTime.length).trim();
 
     const places = splitPlaces(beforeTime);
     const tokensAfter = afterArr.split(/\s+/).filter(Boolean);
     const nat = tokensAfter[0] || "";
-    const em = tokensAfter.find(t => /^[0-9]{4,6}$/.test(t)) || "";
-    const compo = tokensAfter.find(t => /^[A-Z][A-Z0-9]{2,}$/.test(t) && t !== nat) || "";
-    const durationMin = diffMinutes(depTime, arrTime);
-
-    out.push({
-      id: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()+Math.random()),
-      status: durationMin >= 0 ? "OK" : "\u00c0 v\u00e9rifier",
-      fileName: base.fileName,
-      date: base.date || "",
-      agent: base.agent || "",
-      nom: base.nom || "",
-      prenom: base.prenom || "",
-      matricule: base.matricule || "",
-      js: base.js || "",
-      trainNo,
-      from: places.from,
-      to: places.to,
-      via: "",
-      depTime,
-      arrTime,
-      durationMin: durationMin < 0 ? 0 : durationMin,
-      nat,
-      em,
-      compo,
-      obs: durationMin < 0 ? "Heure arriv\u00e9e ant\u00e9rieure au d\u00e9part : v\u00e9rifier passage minuit." : ""
-    });
+    const em = normalizeEm(tokensAfter.find(t => /^[0-9]{4,6}$/.test(t)) || "");
+    const compo = normalizeComposition(tokensAfter.find(t => /^[A-Z][A-Z0-9]{2,}$/.test(t) && t !== nat) || "");
+    const durationMin=depTime&&arrTime?diffMinutes(depTime,arrTime):null;
+    const issues=[];
+    if(!depTime)issues.push("heure de départ absente ou position indéterminée");
+    if(!arrTime)issues.push("heure d’arrivée absente");
+    if(durationMin!=null&&durationMin>8*60)issues.push("durée de conduite supérieure à 8 h");
+    out.push(makeTrain(base,{trainNo,from:places.from,to:places.to,via:"",depTime,arrTime,
+      durationMin:durationMin!=null&&durationMin<=8*60?durationMin:null,nat,em,compo,issues}));
   }
   return out;
+}
+
+function dedupeTrains(list){
+  const seen=new Set();
+  return list.filter(r=>{
+    const key=[r.trainNo,r.depTime,r.arrTime].join("|");
+    if(seen.has(key))return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function splitPlaces(s){
@@ -607,8 +875,88 @@ function matchOne(text, regex){
   return m ? m[1].trim() : "";
 }
 
+function foldText(value){
+  return String(value||"")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/[’`]/g,"'").replace(/[–—·|]/g," - ")
+    .replace(/\s+/g," ").trim().toLowerCase();
+}
+
+function titlePerson(value){
+  return String(value||"").trim().replace(/\s+/g," ").replace(/\b([a-zà-ÿ])/g,m=>m.toUpperCase());
+}
+
+function normalizeDate(value){
+  const v=String(value||"").replace(/[.-]/g,"/");
+  let m=v.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/);
+  if(m)return `${m[1]}/${m[2]}/${m[3].length===2?"20"+m[3]:m[3]}`;
+  m=v.match(/^(\d{4})\/(\d{2})\/(\d{2})$/);
+  return m?`${m[3]}/${m[2]}/${m[1]}`:"";
+}
+
+function parseFileNameMeta(fileName){
+  const name=String(fileName||"").replace(/\.pdf$/i,"");
+  const dateMatch=name.match(/(\d{2})[_.-](\d{2})[_.-](\d{2}|\d{4})/);
+  const matricule=name.match(/(?:^|[\s_-])(\d{5})(?:[\s_-]|$)/)?.[1]||"";
+  const js=(name.match(/\bJS[\s_-]*([A-Z0-9_-]+)/i)?.[1]||name.match(/\b(F\d{3,6})\b/i)?.[1]||"").toUpperCase();
+  let agent="";
+  const standard=name.match(/Bulletin de Service\s*-\s*[^-]+\s*-\s*([^-]+?)\s*-\s*\d{5}/i);
+  if(standard)agent=titlePerson(standard[1]);
+  return {
+    date:dateMatch?normalizeDate(`${dateMatch[1]}/${dateMatch[2]}/${dateMatch[3]}`):"",
+    matricule,js,agent
+  };
+}
+
+function normalizeOcrDigits(value){
+  return String(value||"").replace(/[Oo]/g,"0").replace(/[Il|]/g,"1").replace(/[^\d]/g,"");
+}
+
+function normalizeClock(value){
+  const cleaned=String(value||"").replace(/[Oo]/g,"0").replace(/[Il|]/g,"1");
+  const m=cleaned.match(/\b([0-2]?\d)\s*[:hH]\s*([0-5]\d)\b/);
+  if(!m)return "";
+  const h=Number(m[1]);
+  if(h>23)return "";
+  return String(h).padStart(2,"0")+":"+m[2];
+}
+
+function matchServiceTimes(text,kind){
+  const re=new RegExp(`heure de ${kind}\\s+prev[a-z]*\\s*:\\s*([0-2]?\\d\\s*[:h]\\s*[0-5][0-9o])\\s+re[a-z]*\\s*:\\s*([0-2]?\\d\\s*[:h]\\s*[0-5][0-9o])`,"i");
+  const m=String(text||"").match(re);
+  return {planned:normalizeClock(m?.[1]),real:normalizeClock(m?.[2])};
+}
+
+function matchDurationAfter(text,labelRegex){
+  const source=labelRegex.source;
+  const re=new RegExp(`${source}\\s*:\\s*([0-9o]{1,3}\\s*[h:]\\s*[0-9o]{2})`,"i");
+  return matchOne(text,re);
+}
+
+function cleanPlace(value){
+  return String(value||"").replace(/\s+/g," ").trim();
+}
+
+function normalizeResidence(value){
+  const v=String(value||"").replace(/[^a-z0-9]/gi,"").toUpperCase();
+  return ["RDCN","RDEN","RDCM","RDN"].includes(v)?"RDCN":titlePerson(value);
+}
+
+function normalizeEm(value){
+  let v=normalizeOcrDigits(value);
+  if(v.length===6)v=v.replace(/(\d)\1\1/,"$1$1");
+  return v;
+}
+
+function normalizeComposition(value){
+  const v=String(value||"").replace(/\s+/g,"").toUpperCase();
+  if(["TIC","TI4C","T1AC","T14G"].includes(v))return "T14C";
+  return v;
+}
+
 function parseDurationMinutes(value){
-  const m = String(value||"").trim().match(/^(\d{1,3})\s*[h:]\s*(\d{2})$/i);
+  const cleaned=String(value||"").trim().replace(/[Oo]/g,"0").replace(/[Il|]/g,"1");
+  const m = cleaned.match(/^(\d{1,3})\s*[h:]\s*(\d{2})$/i);
   if(!m) return null;
   const hours=Number(m[1]),minutes=Number(m[2]);
   if(minutes<0||minutes>59) return null;
@@ -640,7 +988,9 @@ function nightMinutesBetween(startTime,endTime){
 }
 
 function fmtMin(min){
-  min = Number(min)||0;
+  if(min===null||min===undefined||min==="")return "—";
+  min=Number(min);
+  if(!Number.isFinite(min))return "—";
   const h = Math.floor(min/60);
   const m = min%60;
   return String(h).padStart(2,"0")+":"+String(m).padStart(2,"0");
@@ -662,27 +1012,34 @@ function render(){
       <td><input value="${escapeHtml(r.trainNo)}" onchange="edit(${idx},'trainNo',this.value)"></td>
       <td><input value="${escapeHtml(r.from)}" onchange="edit(${idx},'from',this.value)"></td>
       <td><input value="${escapeHtml(r.to)}" onchange="edit(${idx},'to',this.value)"></td>
+      <td><input value="${escapeHtml(r.via)}" onchange="edit(${idx},'via',this.value)"></td>
+      <td><input value="${escapeHtml(r.evoDep)}" onchange="edit(${idx},'evoDep',this.value)"></td>
       <td><input value="${escapeHtml(r.depTime)}" onchange="edit(${idx},'depTime',this.value);recalc(${idx})"></td>
       <td><input value="${escapeHtml(r.arrTime)}" onchange="edit(${idx},'arrTime',this.value);recalc(${idx})"></td>
+      <td><input value="${escapeHtml(r.evoArr)}" onchange="edit(${idx},'evoArr',this.value)"></td>
       <td>${fmtMin(r.durationMin)}</td>
       <td><input value="${escapeHtml(r.nat)}" onchange="edit(${idx},'nat',this.value)"></td>
       <td><input value="${escapeHtml(r.em)}" onchange="edit(${idx},'em',this.value)"></td>
       <td><input value="${escapeHtml(r.compo)}" onchange="edit(${idx},'compo',this.value)"></td>
+      <td><input value="${escapeHtml(r.poste)}" onchange="edit(${idx},'poste',this.value)"></td>
+      <td><input value="${escapeHtml(r.otherAgent)}" onchange="edit(${idx},'otherAgent',this.value)"></td>
       <td><input value="${escapeHtml(r.obs)}" onchange="edit(${idx},'obs',this.value)"></td>
       <td><button class="btn danger" onclick="removeRow(${idx})">Supprimer</button></td>
     `;
     tbody.appendChild(tr);
   });
 
-  const total = rows.reduce((s,r)=>s+(Number(r.durationMin)||0),0);
+  const eligibleFiles=new Set(bulletins.filter(b=>b.payrollEligible).map(b=>b.fileName));
+  const total=rows.filter(r=>eligibleFiles.has(r.fileName)).reduce((s,r)=>s+(Number(r.durationMin)||0),0);
   const warnings = rows.filter(r => r.status !== "OK" || !r.trainNo || !r.depTime || !r.arrTime).length + bulletins.filter(b=>b.status!=="OK").length;
   document.getElementById("kpiFiles").textContent = bulletins.length;
   document.getElementById("kpiTrains").textContent = rows.length;
   document.getElementById("kpiDriving").textContent = fmtMin(total);
-  document.getElementById("kpiAmplitude").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.amplitudeMin)||0),0));
-  document.getElementById("kpiEffective").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.effectiveMin)||0),0));
-  document.getElementById("kpiNight").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.nightMin)||0),0));
-  document.getElementById("kpiBreak").textContent = fmtMin(bulletins.reduce((s,b)=>s+(Number(b.breakMin)||0),0));
+  const eligible=bulletins.filter(b=>b.payrollEligible);
+  document.getElementById("kpiAmplitude").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.amplitudeMin)||0),0));
+  document.getElementById("kpiEffective").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.effectiveMin)||0),0));
+  document.getElementById("kpiNight").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.nightMin)||0),0));
+  document.getElementById("kpiBreak").textContent = fmtMin(eligible.reduce((s,b)=>s+(Number(b.breakMin)||0),0));
   document.getElementById("kpiWarnings").textContent = warnings;
   document.getElementById("rawText").textContent = rawTexts.join("\n\n");
   renderBulletins();
@@ -707,18 +1064,27 @@ function renderBulletins(){
     tr.innerHTML=`
       <td><span class="badge ${badgeClass}" title="${escapeHtml(b.obs||"")}">${escapeHtml(b.status)}</span></td>
       <td>${escapeHtml(b.fileName)}</td>
-      <td>${escapeHtml(b.date)}</td>
-      <td>${escapeHtml(b.agent)}</td>
-      <td>${escapeHtml(b.matricule)}</td>
-      <td>${escapeHtml(b.js)}</td>
-      <td>${escapeHtml(b.psReal||"\u2014")}</td>
-      <td>${escapeHtml(b.fsReal||"\u2014")}</td>
-      <td>${fmtMin(b.amplitudeMin)}</td>
-      <td>${fmtMin(b.breakMin)}</td>
-      <td>${fmtMin(b.effectiveMin)}</td>
-      <td>${fmtMin(b.nightMin)}</td>
+      <td><input value="${escapeHtml(b.date)}" onchange="editBulletin(${idx},'date',this.value)"></td>
+      <td><input value="${escapeHtml(b.agent)}" onchange="editBulletin(${idx},'agent',this.value)"></td>
+      <td><input value="${escapeHtml(b.matricule)}" onchange="editBulletin(${idx},'matricule',this.value)"></td>
+      <td><input value="${escapeHtml(b.js)}" onchange="editBulletin(${idx},'js',this.value)"></td>
+      <td><input value="${escapeHtml(b.residence)}" onchange="editBulletin(${idx},'residence',this.value)"></td>
+      <td><input value="${escapeHtml(b.roulement)}" onchange="editBulletin(${idx},'roulement',this.value)"></td>
+      <td><input type="checkbox" ${b.rhr?"checked":""} onchange="editBulletin(${idx},'rhr',this.checked)"></td>
+      <td><input type="checkbox" ${b.twoBs?"checked":""} onchange="editBulletin(${idx},'twoBs',this.checked)"></td>
+      <td>${escapeHtml(b.extractionSource||"—")}</td>
+      <td>${b.ocrConfidence==null?"—":Math.round(b.ocrConfidence)+" %"}</td>
+      <td><input value="${escapeHtml(b.psPlanned)}" onchange="editBulletin(${idx},'psPlanned',this.value)"></td>
+      <td><input value="${escapeHtml(b.psReal)}" onchange="editBulletin(${idx},'psReal',this.value)"></td>
+      <td><input value="${escapeHtml(b.fsPlanned)}" onchange="editBulletin(${idx},'fsPlanned',this.value)"></td>
+      <td><input value="${escapeHtml(b.fsReal)}" onchange="editBulletin(${idx},'fsReal',this.value)"></td>
+      <td><input value="${escapeHtml(fmtMin(b.amplitudeMin)==="—"?"":fmtMin(b.amplitudeMin))}" onchange="editBulletinDuration(${idx},'amplitudeMin',this.value)"></td>
+      <td><input value="${escapeHtml(fmtMin(b.breakMin)==="—"?"":fmtMin(b.breakMin))}" onchange="editBulletinDuration(${idx},'breakMin',this.value)"></td>
+      <td><input value="${escapeHtml(fmtMin(b.effectiveMin)==="—"?"":fmtMin(b.effectiveMin))}" onchange="editBulletinDuration(${idx},'effectiveMin',this.value)"></td>
+      <td><input value="${escapeHtml(fmtMin(b.nightMin)==="—"?"":fmtMin(b.nightMin))}" onchange="editBulletinDuration(${idx},'nightMin',this.value)"></td>
       <td>${fmtMin(bulletinDrivingMin(b.fileName))}</td>
       <td>${bulletinTrainCount(b.fileName)}</td>
+      <td title="${escapeHtml(b.obs||"")}">${escapeHtml(b.obs||"Aucune")}</td>
       <td><button class="btn danger" onclick="removeBulletin(${idx})">Supprimer</button></td>`;
     tbody.appendChild(tr);
   });
@@ -727,6 +1093,7 @@ function renderBulletins(){
 function getDailySummary(){
   const groups = new Map();
   for(const b of bulletins){
+    if(!b.payrollEligible)continue;
     const key = [b.date,b.agent,b.matricule,b.js].join("|");
     if(!groups.has(key)) groups.set(key, {date:b.date,agent:b.agent,matricule:b.matricule,js:b.js,count:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
     const g = groups.get(key);
@@ -743,6 +1110,7 @@ function getDailySummary(){
 function getAgentSummary(){
   const groups=new Map();
   for(const b of bulletins){
+    if(!b.payrollEligible)continue;
     const key=[b.agent,b.matricule].join("|");
     if(!groups.has(key)) groups.set(key,{agent:b.agent,matricule:b.matricule,bulletins:0,trains:0,drivingMin:0,amplitudeMin:0,breakMin:0,effectiveMin:0,nightMin:0});
     const g=groups.get(key);
@@ -787,15 +1155,72 @@ function edit(idx, field, value){
     if(bulletin)bulletin[field]=value;
   }
 }
+
+function editBulletin(idx,field,value){
+  const b=bulletins[idx];
+  if(!b)return;
+  if(field==="date")value=normalizeDate(value)||value;
+  if(["psPlanned","psReal","fsPlanned","fsReal"].includes(field))value=normalizeClock(value)||value;
+  b[field]=value;
+  if(["date","agent","matricule","js"].includes(field)){
+    rows.filter(r=>r.fileName===b.fileName).forEach(r=>r[field]=value);
+  }
+  revalidateBulletin(b);
+  render();
+}
+
+function editBulletinDuration(idx,field,value){
+  const b=bulletins[idx];
+  if(!b)return;
+  b[field]=String(value||"").trim()===""?null:parseDurationMinutes(value);
+  revalidateBulletin(b);
+  render();
+}
+
+function revalidateBulletin(b){
+  const errors=[];
+  if(!b.compatible)errors.push("Document incompatible : ce fichier n’est pas un Bulletin de Service Agent de Conduite");
+  const required=[["date","date"],["agent","agent"],["matricule","matricule"],["js","JS"],["psReal","PS réelle"],["fsReal","FS réelle"]];
+  const missing=required.filter(([field])=>!b[field]).map(([,label])=>label);
+  [["amplitudeMin","amplitude PS-FS"],["breakMin","coupure"],["effectiveMin","travail effectif"],["nightMin","heures de nuit"]].forEach(([field,label])=>{
+    if(b[field]==null)missing.push(label);
+  });
+  if(missing.length)errors.push("Valeurs non lues : "+missing.join(", "));
+  if(b.psReal&&b.fsReal&&b.amplitudeMin!=null){
+    const calc=diffMinutes(b.psReal,b.fsReal);
+    if(Math.abs(calc-b.amplitudeMin)>2)errors.push(`Amplitude incohérente : bulletin ${fmtMin(b.amplitudeMin)}, calcul PS-FS ${fmtMin(calc)}`);
+  }
+  if(b.effectiveMin!=null&&b.amplitudeMin!=null&&b.breakMin!=null&&Math.abs(b.effectiveMin-(b.amplitudeMin-b.breakMin))>2){
+    errors.push("Travail effectif incohérent avec amplitude - coupure");
+  }
+  const trainErrors=rows.filter(r=>r.fileName===b.fileName&&r.status!=="OK").length;
+  if(trainErrors)errors.push(`${trainErrors} train(s) avec une donnée horaire à vérifier`);
+  const driving=bulletinDrivingMin(b.fileName);
+  if(b.effectiveMin!=null&&driving>b.effectiveMin+2)errors.push("Temps de conduite supérieur au travail effectif");
+  b.metricsComplete=!missing.length;
+  b.status=errors.length?"À vérifier":"OK";
+  b.payrollEligible=b.compatible&&b.status==="OK";
+  b.obs=errors.join(" | ");
+}
+
 function recalc(idx){
   const r = rows[idx];
   if(/^\d{1,2}:\d{2}$/.test(r.depTime) && /^\d{1,2}:\d{2}$/.test(r.arrTime)){
     r.durationMin = diffMinutes(r.depTime, r.arrTime);
-    r.status = "OK";
+    if(r.durationMin<=8*60){
+      r.status="OK";
+      r.obs=String(r.obs||"").replace(/\s*\|\s*(heure de départ absente ou illisible|heure d’arrivée absente ou illisible|heure de départ absente ou position indéterminée|heure d’arrivée absente|durée de conduite supérieure à 8 h)/gi,"").trim();
+    }else{
+      r.status="À vérifier";
+      r.durationMin=null;
+      r.obs="Durée de conduite supérieure à 8 h";
+    }
   }else{
     r.status = "\u00c0 v\u00e9rifier";
-    r.durationMin = 0;
+    r.durationMin = null;
   }
+  const b=bulletins.find(x=>x.fileName===r.fileName);
+  if(b)revalidateBulletin(b);
   render();
 }
 function removeRow(idx){ rows.splice(idx,1); render(); }
@@ -809,6 +1234,7 @@ function removeBulletin(idx){
 function clearAll(){ rows=[]; bulletins=[]; rawTexts=[]; fileInput.value=""; render(); }
 
 function exportCSV(){
+  if(!assertPayrollReady())return;
   const headers = exportHeaders();
   const lines = [headers.join(";")];
   rows.forEach(r => lines.push(headers.map(h => csvCell(exportValue(r,h))).join(";")));
@@ -818,7 +1244,9 @@ function exportCSV(){
 function bulletinExportData(){
   return bulletins.map(b=>({
     "Fichier":b.fileName,"Date":b.date,"Agent":b.agent,"Nom":b.nom,"Pr\u00e9nom":b.prenom,"Matricule":b.matricule,"JS":b.js,
-    "PS r\u00e9elle":b.psReal,"FS r\u00e9elle":b.fsReal,
+    "Résidence":b.residence,"Roulement":b.roulement,"RHR":b.rhr?"Oui":"Non","2 BS":b.twoBs?"Oui":"Non",
+    "Mode de lecture":b.extractionSource,"Confiance OCR":b.ocrConfidence==null?"":Math.round(b.ocrConfidence),
+    "PS prévue":b.psPlanned,"PS r\u00e9elle":b.psReal,"FS prévue":b.fsPlanned,"FS r\u00e9elle":b.fsReal,
     "Amplitude minutes":b.amplitudeMin,"Amplitude HH:MM":fmtMin(b.amplitudeMin),
     "Coupure minutes":b.breakMin,"Coupure HH:MM":fmtMin(b.breakMin),
     "Travail effectif minutes":b.effectiveMin,"Travail effectif HH:MM":fmtMin(b.effectiveMin),
@@ -846,6 +1274,7 @@ function agentExportData(){
 
 function exportExcel(){
   if(!bulletins.length){alert("Importe au moins un bulletin avant l\u2019export.");return;}
+  if(!assertPayrollReady())return;
   if(!window.XLSX){alert("La librairie Excel n\u2019est pas charg\u00e9e.");return;}
   const XLSXLib=window.XLSX;
   const wb=XLSXLib.utils.book_new();
@@ -864,6 +1293,7 @@ function exportExcel(){
 
 function exportPDF(){
   if(!bulletins.length){alert("Importe au moins un bulletin avant l\u2019export.");return;}
+  if(!assertPayrollReady())return;
   if(!window.jspdf?.jsPDF){alert("La librairie PDF n\u2019est pas charg\u00e9e.");return;}
   const {jsPDF}=window.jspdf;
   const doc=new jsPDF({orientation:"landscape",unit:"mm",format:"a4"});
@@ -882,13 +1312,13 @@ function exportPDF(){
   addHeader("Contr\u00f4le des Bulletins de Service - Synth\u00e8se compl\u00e8te");
   doc.setTextColor(30,42,48);doc.setFont("helvetica","normal");doc.setFontSize(9);
   doc.text(`Bulletins : ${bulletins.length}   Trains : ${rows.length}   Conduite : ${fmtMin(totalDriving)}   Amplitude PS-FS : ${fmtMin(totalAmplitude)}   Coupures : ${fmtMin(totalBreak)}   Travail effectif : ${fmtMin(totalEffective)}   Nuit 22h-07h : ${fmtMin(totalNight)}`,10,20);
-  doc.autoTable({...tableStyle,startY:25,head:[["Date","Agent","Matricule","JS","PS","FS","Amplitude","Coupure","Travail effectif","Nuit","Conduite","Trains","Statut"]],body:bulletins.map(b=>[b.date,b.agent,b.matricule,b.js,b.psReal,b.fsReal,fmtMin(b.amplitudeMin),fmtMin(b.breakMin),fmtMin(b.effectiveMin),fmtMin(b.nightMin),fmtMin(bulletinDrivingMin(b.fileName)),bulletinTrainCount(b.fileName),b.status])});
+  doc.autoTable({...tableStyle,startY:25,head:[["Date","Agent","Matricule","JS","Lecture","PS prévue","PS réelle","FS prévue","FS réelle","Amplitude","Coupure","Travail effectif","Nuit","Conduite","Trains","Statut"]],body:bulletins.map(b=>[b.date,b.agent,b.matricule,b.js,b.extractionSource,b.psPlanned,b.psReal,b.fsPlanned,b.fsReal,fmtMin(b.amplitudeMin),fmtMin(b.breakMin),fmtMin(b.effectiveMin),fmtMin(b.nightMin),fmtMin(bulletinDrivingMin(b.fileName)),bulletinTrainCount(b.fileName),b.status])});
   doc.addPage("a4","landscape");addHeader("Synth\u00e8se par agent et par journ\u00e9e");
   doc.autoTable({...tableStyle,startY:18,head:[["Date","Agent","Matricule","JS","Trains","Conduite","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"]],body:getDailySummary().map(g=>[g.date,g.agent,g.matricule,g.js,g.count,fmtMin(g.drivingMin),fmtMin(g.amplitudeMin),fmtMin(g.breakMin),fmtMin(g.effectiveMin),fmtMin(g.nightMin)])});
   doc.addPage("a4","landscape");addHeader("Cumuls par agent");
   doc.autoTable({...tableStyle,startY:18,head:[["Agent","Matricule","Bulletins","Trains","Conduite","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"]],body:getAgentSummary().map(g=>[g.agent,g.matricule,g.bulletins,g.trains,fmtMin(g.drivingMin),fmtMin(g.amplitudeMin),fmtMin(g.breakMin),fmtMin(g.effectiveMin),fmtMin(g.nightMin)])});
   doc.addPage("a4","landscape");addHeader("D\u00e9tail des trains");
-  doc.autoTable({...tableStyle,startY:18,head:[["Date","Agent","JS","Train","De","\u00c0","D\u00e9part","Arriv\u00e9e","Dur\u00e9e","Nat","EM","Observation","Statut"]],body:rows.map(r=>[r.date,r.agent,r.js,r.trainNo,r.from,r.to,r.depTime,r.arrTime,fmtMin(r.durationMin),r.nat,r.em,r.obs,r.status])});
+  doc.autoTable({...tableStyle,startY:18,head:[["Date","Agent","JS","Train","De","\u00c0","Via","Évo dép.","D\u00e9part","Arriv\u00e9e","Évo arr.","Dur\u00e9e","Nat","EM","Compo","Poste","Autre agent","Observation","Statut"]],body:rows.map(r=>[r.date,r.agent,r.js,r.trainNo,r.from,r.to,r.via,r.evoDep,r.depTime,r.arrTime,r.evoArr,fmtMin(r.durationMin),r.nat,r.em,r.compo,r.poste,r.otherAgent,r.obs,r.status])});
   const pages=doc.getNumberOfPages();
   for(let page=1;page<=pages;page++){doc.setPage(page);doc.setTextColor(100);doc.setFontSize(7);doc.text(`Page ${page}/${pages}`,287,205,{align:"right"});}
   doc.save("controle_bulletins_service_complet.pdf");
@@ -898,16 +1328,29 @@ function exportJSON(){
   downloadBlob(JSON.stringify({bulletins,trains:rows},null,2), "sauvegarde_controle_bulletins.json", "application/json;charset=utf-8");
 }
 
+function assertPayrollReady(){
+  const invalid=bulletins.filter(b=>!b.payrollEligible);
+  const badRows=rows.filter(r=>r.status!=="OK");
+  if(!bulletins.length){alert("Importe au moins un bulletin avant l’export.");return false;}
+  if(invalid.length||badRows.length){
+    alert(`Export de paie bloqué : ${invalid.length} bulletin(s) et ${badRows.length} ligne(s) train restent à vérifier. Corrige les champs signalés ou supprime les documents incompatibles.`);
+    return false;
+  }
+  return true;
+}
+
 function exportHeaders(){
-  return ["Fichier","Date","Agent","Nom","Pr\u00e9nom","Matricule","JS","Train","De","\u00c0","Via","H d\u00e9part","H arriv\u00e9e","Dur\u00e9e minutes","Dur\u00e9e HH:MM","Nat","EM","Code composition","Observation","Statut","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"];
+  return ["Fichier","Date","Agent","Nom","Pr\u00e9nom","Matricule","JS","Train","De","\u00c0","Via","Évo départ","H d\u00e9part","H arriv\u00e9e","Évo arrivée","Dur\u00e9e minutes","Dur\u00e9e HH:MM","Nat","EM","Code composition","Poste","Autre agent","Observation","Statut","Amplitude PS-FS","Coupure","Travail effectif","Heures de nuit"];
 }
 function exportValue(r,h){
   const b=bulletins.find(x=>x.fileName===r.fileName)||{};
   const map = {
     "Fichier":r.fileName, "Date":r.date, "Agent":r.agent, "Nom":r.nom, "Pr\u00e9nom":r.prenom,
     "Matricule":r.matricule, "JS":r.js, "Train":r.trainNo, "De":r.from, "\u00c0":r.to, "Via":r.via,
-    "H d\u00e9part":r.depTime, "H arriv\u00e9e":r.arrTime, "Dur\u00e9e minutes":r.durationMin, "Dur\u00e9e HH:MM":fmtMin(r.durationMin),
-    "Nat":r.nat, "EM":r.em, "Code composition":r.compo, "Observation":r.obs, "Statut":r.status,
+    "Évo départ":r.evoDep,"H d\u00e9part":r.depTime, "H arriv\u00e9e":r.arrTime,"Évo arrivée":r.evoArr,
+    "Dur\u00e9e minutes":r.durationMin, "Dur\u00e9e HH:MM":fmtMin(r.durationMin),
+    "Nat":r.nat, "EM":r.em, "Code composition":r.compo,"Poste":r.poste,"Autre agent":r.otherAgent,
+    "Observation":r.obs, "Statut":r.status,
     "Amplitude PS-FS":fmtMin(b.amplitudeMin),"Coupure":fmtMin(b.breakMin),"Travail effectif":fmtMin(b.effectiveMin),"Heures de nuit":fmtMin(b.nightMin)
   };
   return map[h] ?? "";
