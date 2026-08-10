@@ -1,7 +1,4 @@
 
-
-
-
 <!DOCTYPE html>
 <!-- Version autonome : biblioth&#xE8;ques PDF et exports int&#xE9;gr&#xE9;es -->
 <html lang="fr">
@@ -1130,11 +1127,14 @@ function matchServiceTimes(text,kind){
   const marker=new RegExp(`heure\\s+de\\s+${kind}\\b`,"i");
   const markerMatch=marker.exec(source);
   if(!markerMatch)return {planned:"",real:""};
-  const segment=source.slice(markerMatch.index,markerMatch.index+260);
+  // Chercher APRÈS le libellé "heure de ps/fs" pour ne jamais capter le "re" de "heure".
+  const segment=source.slice(markerMatch.index+markerMatch[0].length,markerMatch.index+markerMatch[0].length+260);
   const clock="([0-2]?\\d\\s*[:h]\\s*[0-5][0-9o])";
-  const planned=matchOne(segment,new RegExp(`prev[a-z]*\\s*:?\\s*${clock}`,"i"));
-  const real=matchOne(segment,new RegExp(`re[a-z]*\\s*:?\\s*${clock}`,"i"));
+  // "prévue" et "réelle" tolérants aux accents et à l'OCR (prevue/prévu, reelle/réel...).
+  const planned=matchOne(segment,new RegExp(`pr[ée]v[a-z]*\\s*:?\\s*${clock}`,"i"));
+  const real=matchOne(segment,new RegExp(`r[ée]el[a-z]*\\s*:?\\s*${clock}`,"i"));
   if(planned||real)return {planned:normalizeClock(planned),real:normalizeClock(real)};
+  // Repli : la 1re heure lue = prévue, la 2e = réelle.
   const times=[...segment.matchAll(new RegExp(clock,"gi"))].map(match=>normalizeClock(match[1])).filter(Boolean);
   return {planned:times[0]||"",real:times[1]||""};
 }
