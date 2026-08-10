@@ -1,4 +1,8 @@
 
+
+
+
+
 <!DOCTYPE html>
 <!-- Version autonome : biblioth&#xE8;ques PDF et exports int&#xE9;gr&#xE9;es -->
 <html lang="fr">
@@ -801,7 +805,7 @@ function parseBulletin(extracted,fileName){
 
   const base={fileName,date,agent,nom,prenom,matricule,js};
   let trains=(extracted.pages||[]).flatMap(page=>parseTrainLayout(page,base));
-  if(!trains.length)trains=parseTrainLines(clean.split(/regularite|signalisation|conditions atmospheriques/i)[0],base);
+  if(!trains.length)trains=parseTrainLines(clean,base);
   trains=dedupeTrains(trains);
 
   const missing=[];
@@ -873,10 +877,18 @@ function parseTrainLayout(page,base){
   const headerLine=page.lines.find(line=>/\btrain(?:\s*n)?(?:o|°)?\b/i.test(foldText(line.text)));
   if(!headerLine)return out;
   const headerY=Math.min(...headerLine.words.map(w=>Number(w.y)||0));
+  // Les rubriques de retard/régularité et les autres informations placées sous
+  // le tableau ne sont pas des circulations. Sans cette borne, un numéro de
+  // train cité dans un retard pouvait être relu comme une ligne de conduite.
+  const informationBoundaryY=Math.min(...page.lines.map(line=>{
+    const y=Math.min(...(line.words||[]).map(w=>Number(w.y)||0));
+    return Number.isFinite(y)&&y>headerY+5&&isSupplementaryInformationStart(line.text)?y:Infinity;
+  }));
   const columnCenters=detectTrainColumnCenters(headerLine,page.width);
   for(const line of page.lines){
     const lineY=Math.min(...(line.words||[]).map(w=>Number(w.y)||0));
     if(!Number.isFinite(lineY)||lineY<=headerY+5||lineY>=page.height*0.92)continue;
+    if(Number.isFinite(informationBoundaryY)&&lineY>=informationBoundaryY)continue;
     if(/genere|amplitude|heures? de nuit|frh-f/i.test(foldText(line.text)))continue;
     const trainWord=line.words?.find(w=>/^\d{4,8}$/.test(normalizeOcrDigits(w.text))&&wordCenter(w)/page.width<0.12);
     if(!trainWord)continue;
@@ -940,6 +952,12 @@ function wordCenter(word){
   return (Number(word.x)||0)+(Number(word.width)||0)/2;
 }
 
+function isEvoLeg(o){
+  const hasEvo=String(o.evoDep||"").trim()!==""||String(o.evoArr||"").trim()!=="";
+  const trainNo=normalizeOcrDigits(o.trainNo).match(/\d{4,8}/)?.[0]||"";
+  return hasEvo&&!trainNo;
+}
+
 function makeTrain(base,data){
   const depTime=normalizeClock(data.depTime);
   const arrTime=normalizeClock(data.arrTime);
@@ -949,19 +967,23 @@ function makeTrain(base,data){
   const nat=String(data.nat||"").trim();
   const em=normalizeEm(data.em);
   const issues=[...(data.issues||[])];
-  if(!trainNo)issues.push("numéro de train absent ou illisible");
-  if(!from)issues.push("origine absente ou illisible");
-  if(!to)issues.push("destination absente ou illisible");
-  if(!depTime)issues.push("heure de départ absente ou illisible");
-  if(!arrTime)issues.push("heure d’arrivée absente ou illisible");
-  if(!nat)issues.push("nature du train absente ou illisible");
-  if(!em)issues.push("EM absent ou illisible");
+  const evoLeg=isEvoLeg(data);
+  if(!evoLeg){
+    if(!trainNo)issues.push("numéro de train absent ou illisible");
+    if(!from)issues.push("origine absente ou illisible");
+    if(!to)issues.push("destination absente ou illisible");
+    if(!depTime)issues.push("heure de départ absente ou illisible");
+    if(!arrTime)issues.push("heure d’arrivée absente ou illisible");
+    if(!nat)issues.push("nature du train absente ou illisible");
+    if(!em)issues.push("EM absent ou illisible");
+  }
   const durationMin=depTime&&arrTime?diffMinutes(depTime,arrTime):null;
   if(durationMin!=null&&durationMin>8*60)issues.push("durée de conduite supérieure à 8 h");
   const uniqueIssues=[...new Set(issues)];
   return {
     id:crypto.randomUUID?crypto.randomUUID():String(Date.now()+Math.random()),
     status:uniqueIssues.length?"À vérifier":"OK",
+    isEvo:evoLeg,
     fileName:base.fileName,
     date:base.date||"",agent:base.agent||"",nom:base.nom||"",prenom:base.prenom||"",
     matricule:base.matricule||"",js:base.js||"",
@@ -983,13 +1005,17 @@ function validateTrainRow(row){
   row.nat=String(row.nat||"").trim();
   row.em=normalizeEm(row.em);
   const issues=[];
-  if(!row.trainNo)issues.push("numéro de train absent ou illisible");
-  if(!row.from)issues.push("origine absente ou illisible");
-  if(!row.to)issues.push("destination absente ou illisible");
-  if(!row.depTime)issues.push("heure de départ absente ou illisible");
-  if(!row.arrTime)issues.push("heure d’arrivée absente ou illisible");
-  if(!row.nat)issues.push("nature du train absente ou illisible");
-  if(!row.em)issues.push("EM absent ou illisible");
+  const evoLeg=isEvoLeg(row);
+  row.isEvo=evoLeg;
+  if(!evoLeg){
+    if(!row.trainNo)issues.push("numéro de train absent ou illisible");
+    if(!row.from)issues.push("origine absente ou illisible");
+    if(!row.to)issues.push("destination absente ou illisible");
+    if(!row.depTime)issues.push("heure de départ absente ou illisible");
+    if(!row.arrTime)issues.push("heure d’arrivée absente ou illisible");
+    if(!row.nat)issues.push("nature du train absente ou illisible");
+    if(!row.em)issues.push("EM absent ou illisible");
+  }
   const duration=row.depTime&&row.arrTime?diffMinutes(row.depTime,row.arrTime):null;
   if(duration!=null&&duration>8*60)issues.push("durée de conduite supérieure à 8 h");
   row.durationMin=duration!=null&&duration<=8*60?duration:null;
@@ -1004,6 +1030,9 @@ function parseTrainLines(pageText, base){
   const out = [];
   const trainRegex = /^(\d{4,8})\s+(.+)$/;
   for(let i=0;i<lines.length;i++){
+    // En lecture texte comme en OCR, tout ce qui suit ces rubriques reste une
+    // donnée informative du BS et ne doit jamais alimenter la liste des trains.
+    if(isSupplementaryInformationStart(lines[i]))break;
     const m = lines[i].match(trainRegex);
     if(!m) continue;
     if(/Date de service|G\u00e9n\u00e9r\u00e9|Matricule|FRH|about:blank/.test(lines[i])) continue;
@@ -1037,10 +1066,21 @@ function parseTrainLines(pageText, base){
   return out;
 }
 
+function isSupplementaryInformationStart(value){
+  const text=foldText(value);
+  const isInformation=/(?:\bretards?\b|\bregularite\b|\bsignalisation\b|conditions?\s+atmospheriques?)/.test(text);
+  if(!isInformation)return false;
+  // Une vraie ligne de circulation peut contenir le mot « retard » dans son
+  // observation. Elle reste un train dès lors que ses deux horaires sont lus.
+  const clocks=text.match(/\b(?:[01]?\d|2[0-3])\s*[:h]\s*[0-5]\d\b/g)||[];
+  return clocks.length<2;
+}
+
 function dedupeTrains(list){
   const seen=new Set();
   return list.filter(r=>{
-    const key=[r.trainNo,r.depTime,r.arrTime].join("|");
+    const key=[r.trainNo||"",r.from||"",r.to||"",r.depTime||"",r.arrTime||"",r.evoDep||"",r.evoArr||""].join("|");
+    if(key.replace(/\|/g,"")==="")return false;
     if(seen.has(key))return false;
     seen.add(key);
     return true;
