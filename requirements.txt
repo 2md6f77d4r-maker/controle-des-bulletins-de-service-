@@ -3,5 +3,6 @@ opencv-python-headless==4.12.0.88
 numpy==2.2.6
 Pillow==11.3.0
 pytesseract==0.3.13
+openpyxl==3.1.5
 pyinstaller==6.15.0
-# build trigger 2026-09-10
+# build trigger Excel v1.1.0
