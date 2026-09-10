@@ -4,3 +4,4 @@ numpy==2.2.6
 Pillow==11.3.0
 pytesseract==0.3.13
 pyinstaller==6.15.0
+# build trigger 2026-09-10
