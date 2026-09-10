@@ -1,0 +1,79 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'app.py'
+      - 'requirements.txt'
+      - '.github/workflows/build-windows.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Tesseract OCR
+        shell: powershell
+        run: |
+          choco install tesseract --yes --no-progress
+          $src = 'C:\Program Files\Tesseract-OCR'
+          if (-not (Test-Path $src)) { throw 'Tesseract installation not found' }
+          New-Item -ItemType Directory -Force -Path '.\tesseract' | Out-Null
+          Copy-Item "$src\tesseract.exe" '.\tesseract\tesseract.exe' -Force
+          if (Test-Path "$src\tessdata") {
+            Copy-Item "$src\tessdata" '.\tesseract\tessdata' -Recurse -Force
+          }
+          Get-ChildItem $src -Filter '*.dll' | ForEach-Object { Copy-Item $_.FullName '.\tesseract\' -Force }
+
+      - name: Build executable
+        shell: powershell
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name Controle_BS_RDCN `
+            --add-data "tesseract;tesseract" `
+            --hidden-import PIL._tkinter_finder `
+            app.py
+
+      - name: Package application
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path '.\package' | Out-Null
+          Copy-Item '.\dist\Controle_BS_RDCN.exe' '.\package\Controle_BS_RDCN.exe' -Force
+          @"
+Contrôle BS - RDCN
+
+Application Windows autonome pour analyser les Bulletins de Service PDF/ZIP.
+- 1 PDF attendu = 1 BS de 3 pages
+- lecture du temps en tête de train
+- lecture des heures de nuit 22h00-07h00
+- lecture du travail effectif
+- comparaison des 3 pages
+- contrôles de cohérence et validation manuelle
+
+Version compilée automatiquement par GitHub Actions.
+"@ | Set-Content '.\package\LISEZ-MOI.txt' -Encoding UTF8
+          Compress-Archive -Path '.\package\*' -DestinationPath '.\Controle_BS_RDCN_Windows.zip' -Force
+
+      - name: Upload Windows package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Controle_BS_RDCN_Windows
+          path: Controle_BS_RDCN_Windows.zip
+          if-no-files-found: error
+          retention-days: 30
