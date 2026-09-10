@@ -55,19 +55,15 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force -Path '.\package' | Out-Null
           Copy-Item '.\dist\Controle_BS_RDCN.exe' '.\package\Controle_BS_RDCN.exe' -Force
-          @"
-Contrôle BS - RDCN
-
-Application Windows autonome pour analyser les Bulletins de Service PDF/ZIP.
-- 1 PDF attendu = 1 BS de 3 pages
-- lecture du temps en tête de train
-- lecture des heures de nuit 22h00-07h00
-- lecture du travail effectif
-- comparaison des 3 pages
-- contrôles de cohérence et validation manuelle
-
-Version compilée automatiquement par GitHub Actions.
-"@ | Set-Content '.\package\LISEZ-MOI.txt' -Encoding UTF8
+          $lines = @(
+            'Contrôle BS - RDCN',
+            '',
+            'Application Windows autonome pour analyser les Bulletins de Service PDF/ZIP.',
+            '1 PDF attendu = 1 BS de 3 pages.',
+            'Lecture du temps en tête de train, des heures de nuit 22h00-07h00 et du travail effectif.',
+            'Comparaison des 3 pages, contrôles de cohérence et validation manuelle.'
+          )
+          Set-Content '.\package\LISEZ-MOI.txt' -Value $lines -Encoding UTF8
           Compress-Archive -Path '.\package\*' -DestinationPath '.\Controle_BS_RDCN_Windows.zip' -Force
 
       - name: Upload Windows package
