@@ -57,6 +57,7 @@ jobs:
             --name Controle_BS_RDCN `
             --add-data "tesseract;tesseract" `
             --hidden-import PIL._tkinter_finder `
+            --collect-data customtkinter `
             app.py
 
       - name: Package application
@@ -65,10 +66,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path '.\package' | Out-Null
           Copy-Item '.\dist\Controle_BS_RDCN.exe' '.\package\Controle_BS_RDCN.exe' -Force
           $lines = @(
-            'Contrôle BS - RDCN v2.0.0',
+            'Contrôle BS - RDCN v2.2.0',
             '',
             'Application Windows autonome optimisée pour analyser de gros volumes de BS PDF/ZIP et de fichiers Excel.',
-            'Lecture directe du texte PDF, OCR sécurisé en secours et traitement parallèle.',
+            'Lecture directe du texte PDF, OCR progressif avec arrêt anticipé et traitement parallèle.',
             '1 PDF attendu = 1 BS de 3 pages.',
             'Lecture du temps en tête de train, des heures de nuit 22h00-07h00 et du travail effectif.',
             'Import Excel possible seul ou avec les BS.',
@@ -76,12 +77,12 @@ jobs:
             'Tout écart entre Excel et BS est signalé pour contrôle.'
           )
           Set-Content '.\package\LISEZ-MOI.txt' -Value $lines -Encoding UTF8
-          Compress-Archive -Path '.\package\*' -DestinationPath '.\Controle_BS_RDCN_Windows_v2.0.0.zip' -Force
+          Compress-Archive -Path '.\package\*' -DestinationPath '.\Controle_BS_RDCN_Windows_v2.2.0.zip' -Force
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
         with:
-          name: Controle_BS_RDCN_Windows_v2.0.0
-          path: Controle_BS_RDCN_Windows_v2.0.0.zip
+          name: Controle_BS_RDCN_Windows_v2.2.0
+          path: Controle_BS_RDCN_Windows_v2.2.0.zip
           if-no-files-found: error
           retention-days: 30
