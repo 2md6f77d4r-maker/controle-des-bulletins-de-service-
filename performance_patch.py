@@ -9,9 +9,13 @@ if "RDCN performance layer v2" in s:
 
 s = s.replace(
     "import os, re, csv, sys, math, time, hashlib, zipfile, tempfile, shutil, threading, traceback",
-    "import os, re, csv, sys, math, time, hashlib, zipfile, tempfile, shutil, threading, traceback\nfrom concurrent.futures import ThreadPoolExecutor, as_completed"
+    "import os, re, csv, sys, math, time, hashlib, zipfile, tempfile, shutil, threading, traceback\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\nimport customtkinter as ctk"
 )
-s = s.replace('APP_VERSION = "1.1.0"', 'APP_VERSION = "2.0.0"  # RDCN performance layer v2')
+s = s.replace('APP_VERSION = "1.1.0"', 'APP_VERSION = "2.2.0"  # RDCN performance layer v2')
+s = s.replace("RENDER_SCALE = 3.0", "RENDER_SCALE = 2.4")
+s = s.replace("fx=1.35, fy=1.35", "fx=1.10, fy=1.10")
+s = s.replace("class App(tk.Tk):", "class App(ctk.CTk):")
+s = s.replace("import pytesseract\n", "import pytesseract\nos.environ.setdefault('OMP_THREAD_LIMIT', '1')\n")
 
 old_render = '''def render_footer(page, top=FOOTER_TOP):
     pix = page.get_pixmap(matrix=fitz.Matrix(RENDER_SCALE, RENDER_SCALE), alpha=False)
@@ -65,7 +69,7 @@ new_primary = '''def page_primary(page):
         vals[metric] = value
         ev[metric] = evidence
 
-    if all(vals.get(metric) is not None for metric in ("head", "night", "work", "amplitude", "break")):
+    if all(vals.get(metric) is not None for metric in ("head", "night", "work")):
         return vals, ev
 
     crop = render_footer(page)
@@ -82,6 +86,158 @@ if old_primary not in s:
     raise SystemExit("page_primary anchor not found")
 s = s.replace(old_primary, new_primary)
 
+
+old_page_deep = '''def page_deep(page):
+    crop = render_footer(page, 0.69)
+    votes = {m: [] for m in METRICS}
+    evidence = {m: [] for m in METRICS}
+    for name, img in preprocess_variants(crop):
+        for psm in (6, 11):
+            txt = ocr_image(img, psm)
+            for m in METRICS:
+                v, e = find_metric(txt, m)
+                if v is not None:
+                    votes[m].append(v)
+                    evidence[m].append((name, psm, v, e))
+    best = {}
+    for m, vals in votes.items():
+        if vals:
+            c = Counter(vals)
+            best[m] = c.most_common(1)[0][0]
+        else:
+            best[m] = None
+    return best, evidence
+'''
+new_page_deep = '''def page_deep(page):
+    # OCR progressif : arrêt dès que deux lectures concordent.
+    crop = render_footer(page, 0.69)
+    variants = preprocess_variants(crop)
+    votes = {m: [] for m in METRICS}
+    evidence = {m: [] for m in METRICS}
+
+    passes = [(variants[0], 6), (variants[1], 6), (variants[2], 6), (variants[3], 6),
+              (variants[0], 11), (variants[1], 11)]
+    for (name, img), psm in passes:
+        txt = ocr_image(img, psm)
+        for metric in METRICS:
+            value, ev = find_metric(txt, metric)
+            if value is not None:
+                votes[metric].append(value)
+                evidence[metric].append((name, psm, value, ev))
+        resolved = True
+        for metric in ("head", "night", "work"):
+            counts = Counter(votes[metric])
+            if not counts or counts.most_common(1)[0][1] < 2:
+                resolved = False
+                break
+        if resolved:
+            break
+
+    best = {}
+    for metric, values in votes.items():
+        best[metric] = Counter(values).most_common(1)[0][0] if values else None
+    return best, evidence
+'''
+if old_page_deep not in s:
+    raise SystemExit("page_deep anchor not found")
+s = s.replace(old_page_deep, new_page_deep)
+
+
+def replace_top_function(source, name, next_name, replacement):
+    start = source.find(f"def {name}(")
+    end = source.find(f"def {next_name}(", start)
+    if start < 0 or end < 0:
+        raise SystemExit(f"top-level function {name} not found")
+    return source[:start] + replacement.rstrip() + "\\n\\n\\n" + source[end:]
+
+
+fast_analyze = r'''def analyze_pdf(path, source):
+    doc = fitz.open(path)
+    try:
+        result = BSResult(source, path, os.path.basename(path), len(doc))
+        result.date, result.agent, result.matricule, result.journee = parse_filename(path)
+        if len(doc) != 3:
+            result.warnings.append(f"Nombre de pages inhabituel : {len(doc)} (3 attendues)")
+
+        prim = []
+        # Deux pages identiques suffisent déjà au niveau historique 2/3.
+        # La troisième n'est lue que si les deux premières divergent.
+        for page_index, page in enumerate(doc):
+            values, _ = page_primary(page)
+            prim.append(values)
+            if page_index >= 1:
+                stable = True
+                for metric in ("head", "night", "work"):
+                    counts = Counter(v.get(metric) for v in prim if v.get(metric) is not None)
+                    if not counts or counts.most_common(1)[0][1] < 2:
+                        stable = False
+                        break
+                if stable:
+                    break
+
+        needs_deep = False
+        for metric in ("head", "night", "work"):
+            values = [item.get(metric) for item in prim]
+            counts = Counter(value for value in values if value is not None)
+            if not counts or counts.most_common(1)[0][1] < min(2, len(doc)):
+                needs_deep = True
+                break
+
+        deeps = []
+        deep_evidence = []
+        if needs_deep:
+            for page in doc:
+                values, evidence = page_deep(page)
+                deeps.append(values)
+                deep_evidence.append(evidence)
+                enough = True
+                for metric in ("head", "night", "work"):
+                    combined = [item.get(metric) for item in prim + deeps if item.get(metric) is not None]
+                    counts = Counter(combined)
+                    if not counts or counts.most_common(1)[0][1] < 3:
+                        enough = False
+                        break
+                if enough:
+                    break
+
+        def cm(metric):
+            primary = [item.get(metric) for item in prim]
+            deep = [item.get(metric) for item in deeps]
+            return consensus_metric(primary, deep, deep_evidence)
+
+        result.head = cm("head")
+        result.night = cm("night")
+        result.work = cm("work")
+        result.amplitude = cm("amplitude")
+        result.break_time = cm("break")
+        main_metrics = [result.head, result.night, result.work]
+
+        if any(metric.minutes is None for metric in main_metrics):
+            result.warnings.append("Au moins une donnée principale est absente")
+        if result.amplitude.minutes is not None and result.break_time.minutes is not None and result.work.minutes is not None:
+            expected = result.amplitude.minutes - result.break_time.minutes
+            if abs(expected - result.work.minutes) > 2:
+                result.warnings.append(
+                    f"Incohérence : amplitude - coupure = {fmt_minutes(expected)}, travail effectif lu = {result.work.value}"
+                )
+        if result.work.minutes is not None:
+            if result.head.minutes is not None and result.head.minutes > result.work.minutes + 2:
+                result.warnings.append("Temps en tête de train supérieur au travail effectif")
+            if result.night.minutes is not None and result.night.minutes > result.work.minutes + 2:
+                result.warnings.append("Heures de nuit supérieures au travail effectif")
+
+        result.global_confidence = min([metric.confidence for metric in main_metrics] or [0])
+        if len(doc) == 3 and result.global_confidence >= 96 and not result.warnings:
+            result.status = "VALIDÉ"
+        elif result.global_confidence >= 90 and not any("Incohérence" in warning or "absente" in warning for warning in result.warnings):
+            result.status = "À VÉRIFIER"
+        else:
+            result.status = "CONTRÔLE REQUIS"
+        return result
+    finally:
+        doc.close()
+'''
+
 def replace_method(source, name, replacement):
     start = source.find(f"    def {name}(")
     if start < 0:
@@ -91,112 +247,164 @@ def replace_method(source, name, replacement):
     return source[:start] + replacement.rstrip() + "\\n\\n" + source[end:]
 
 build_ui = r'''    def build_ui(self):
-        self.configure(bg="#F3F6FA")
+        ctk.set_appearance_mode("light")
+        ctk.set_default_color_theme("blue")
+        self.configure(fg_color="#F4F7FB")
+
         style = ttk.Style(self)
         try:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure(".", font=("Segoe UI", 10), background="#F3F6FA", foreground="#172033")
-        style.configure("Header.TFrame", background="#102A43")
-        style.configure("HeaderTitle.TLabel", background="#102A43", foreground="white", font=("Segoe UI Semibold", 20))
-        style.configure("HeaderSub.TLabel", background="#102A43", foreground="#B9CBE0", font=("Segoe UI", 10))
-        style.configure("Primary.TButton", font=("Segoe UI Semibold", 10), padding=(16, 10), foreground="white", background="#007A78")
-        style.map("Primary.TButton", background=[("active", "#006B69"), ("disabled", "#8FA9A8")])
-        style.configure("Action.TButton", padding=(12, 9))
-        style.configure("Card.TFrame", background="white", relief="flat")
-        style.configure("CardTitle.TLabel", background="white", foreground="#64748B", font=("Segoe UI", 9))
-        style.configure("CardValue.TLabel", background="white", foreground="#102A43", font=("Segoe UI Semibold", 17))
-        style.configure("Treeview", rowheight=32, background="white", fieldbackground="white", borderwidth=0)
-        style.configure("Treeview.Heading", background="#E8EEF5", foreground="#243B53", font=("Segoe UI Semibold", 9), padding=(8, 9))
-        style.map("Treeview", background=[("selected", "#CDEDEA")], foreground=[("selected", "#102A43")])
-        style.configure("Status.TLabel", background="#102A43", foreground="#D9E6F2", padding=(12, 7))
+        style.configure("Treeview", rowheight=36, background="#FFFFFF", fieldbackground="#FFFFFF",
+                        foreground="#24364B", borderwidth=0, font=("Segoe UI", 10))
+        style.configure("Treeview.Heading", background="#EDF2F7", foreground="#52667A",
+                        font=("Segoe UI Semibold", 9), padding=(10, 11), relief="flat")
+        style.map("Treeview", background=[("selected", "#DDF3F1")], foreground=[("selected", "#123C3A")])
 
-        header = ttk.Frame(self, style="Header.TFrame", padding=(22, 16))
-        header.pack(fill="x")
-        title_box = ttk.Frame(header, style="Header.TFrame")
-        title_box.pack(side="left")
-        ttk.Label(title_box, text="Contrôle des Bulletins de Service", style="HeaderTitle.TLabel").pack(anchor="w")
-        ttk.Label(title_box, text="Lecture fiable PDF, ZIP et Excel • contrôle paie RDCN", style="HeaderSub.TLabel").pack(anchor="w", pady=(3, 0))
-        self.add_button = ttk.Button(header, text="＋ Importer des fichiers", style="Primary.TButton", command=self.choose_files)
-        self.add_button.pack(side="right")
+        shell = ctk.CTkFrame(self, fg_color="transparent")
+        shell.pack(fill="both", expand=True)
+        shell.grid_rowconfigure(0, weight=1)
+        shell.grid_columnconfigure(1, weight=1)
 
-        toolbar = ttk.Frame(self, padding=(18, 12, 18, 8))
-        toolbar.pack(fill="x")
-        ttk.Button(toolbar, text="Corriger la sélection", style="Action.TButton", command=self.edit_selected).pack(side="left", padx=(0, 6))
-        ttk.Button(toolbar, text="Voir le pied de page", style="Action.TButton", command=self.show_footers).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="Exporter CSV", style="Action.TButton", command=self.export_csv).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="Vider", style="Action.TButton", command=self.clear).pack(side="left", padx=6)
-        self.cancel_button = ttk.Button(toolbar, text="Arrêter l’analyse", style="Action.TButton", command=self.cancel_processing, state="disabled")
-        self.cancel_button.pack(side="left", padx=6)
+        sidebar = ctk.CTkFrame(shell, width=235, corner_radius=0, fg_color="#0B1F33")
+        sidebar.grid(row=0, column=0, sticky="nsew")
+        sidebar.grid_propagate(False)
 
-        search_box = ttk.Frame(toolbar)
-        search_box.pack(side="right")
-        ttk.Label(search_box, text="Filtrer").pack(side="left", padx=(0, 7))
+        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
+        brand.pack(fill="x", padx=22, pady=(28, 30))
+        ctk.CTkLabel(brand, text="RDCN", text_color="#5EEAD4",
+                     font=ctk.CTkFont("Segoe UI", 13, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(brand, text="Contrôle BS", text_color="white",
+                     font=ctk.CTkFont("Segoe UI", 24, weight="bold")).pack(anchor="w", pady=(2, 0))
+        ctk.CTkLabel(brand, text="Centre de contrôle paie", text_color="#8FA6BD",
+                     font=ctk.CTkFont("Segoe UI", 11)).pack(anchor="w", pady=(4, 0))
+
+        self.add_button = ctk.CTkButton(
+            sidebar, text="＋  Importer des fichiers", command=self.choose_files,
+            height=46, corner_radius=10, fg_color="#0D9488", hover_color="#0F766E",
+            font=ctk.CTkFont("Segoe UI", 12, weight="bold"), anchor="w"
+        )
+        self.add_button.pack(fill="x", padx=16, pady=(0, 18))
+
+        menu = (
+            ("✎   Corriger la sélection", self.edit_selected),
+            ("▣   Voir le pied de page", self.show_footers),
+            ("⇩   Exporter en CSV", self.export_csv),
+            ("⌫   Vider les résultats", self.clear),
+        )
+        for label, command in menu:
+            ctk.CTkButton(
+                sidebar, text=label, command=command, height=42, corner_radius=8,
+                fg_color="transparent", hover_color="#163653", text_color="#D7E3EF",
+                anchor="w", font=ctk.CTkFont("Segoe UI", 11)
+            ).pack(fill="x", padx=16, pady=3)
+
+        self.cancel_button = ctk.CTkButton(
+            sidebar, text="■   Arrêter l’analyse", command=self.cancel_processing,
+            height=40, corner_radius=8, fg_color="#7F1D1D", hover_color="#991B1B",
+            state="disabled", anchor="w"
+        )
+        self.cancel_button.pack(side="bottom", fill="x", padx=16, pady=20)
+
+        content = ctk.CTkFrame(shell, fg_color="#F4F7FB", corner_radius=0)
+        content.grid(row=0, column=1, sticky="nsew")
+        content.grid_rowconfigure(4, weight=1)
+        content.grid_columnconfigure(0, weight=1)
+
+        heading = ctk.CTkFrame(content, fg_color="transparent")
+        heading.grid(row=0, column=0, sticky="ew", padx=28, pady=(25, 16))
+        ctk.CTkLabel(heading, text="Tableau de contrôle",
+                     text_color="#142B44", font=ctk.CTkFont("Segoe UI", 26, weight="bold")).pack(side="left")
+        badge = ctk.CTkLabel(heading, text="  VERSION 2.2  ", text_color="#0F766E",
+                             fg_color="#D9F5F0", corner_radius=8,
+                             font=ctk.CTkFont("Segoe UI", 10, weight="bold"), height=28)
+        badge.pack(side="left", padx=14)
         self.filter_var = tk.StringVar()
-        search = ttk.Entry(search_box, textvariable=self.filter_var, width=30)
-        search.pack(side="left")
+        search = ctk.CTkEntry(
+            heading, textvariable=self.filter_var, width=320, height=40, corner_radius=10,
+            placeholder_text="Rechercher un agent, une date, une journée…",
+            border_width=1, border_color="#D6E0EA", fg_color="white"
+        )
+        search.pack(side="right")
         self.filter_job = None
         self.filter_var.trace_add("write", lambda *_: self.schedule_filter())
 
-        cards = ttk.Frame(self, padding=(18, 2, 18, 10))
-        cards.pack(fill="x")
+        cards = ctk.CTkFrame(content, fg_color="transparent")
+        cards.grid(row=1, column=0, sticky="ew", padx=28)
+        for col in range(4):
+            cards.grid_columnconfigure(col, weight=1)
         self.card_total = tk.StringVar(value="0")
         self.card_ok = tk.StringVar(value="0")
         self.card_review = tk.StringVar(value="0")
         self.card_work = tk.StringVar(value="0h00")
-        for col, (label, variable) in enumerate((
-            ("JOURNÉES CHARGÉES", self.card_total),
-            ("VALIDÉES / CONFIRMÉES", self.card_ok),
-            ("À CONTRÔLER", self.card_review),
-            ("TRAVAIL EFFECTIF", self.card_work),
-        )):
-            card = ttk.Frame(cards, style="Card.TFrame", padding=(16, 11))
-            card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 5, 0 if col == 3 else 5))
-            ttk.Label(card, text=label, style="CardTitle.TLabel").pack(anchor="w")
-            ttk.Label(card, textvariable=variable, style="CardValue.TLabel").pack(anchor="w", pady=(2, 0))
-            cards.columnconfigure(col, weight=1)
+        card_data = (
+            ("Journées chargées", self.card_total, "#2563EB", "#DBEAFE"),
+            ("Validées", self.card_ok, "#059669", "#D1FAE5"),
+            ("À contrôler", self.card_review, "#DC2626", "#FEE2E2"),
+            ("Travail effectif", self.card_work, "#7C3AED", "#EDE9FE"),
+        )
+        for col, (label, variable, color, pale) in enumerate(card_data):
+            card = ctk.CTkFrame(cards, fg_color="white", corner_radius=14, border_width=1, border_color="#E3EAF2")
+            card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 7, 0 if col == 3 else 7))
+            stripe = ctk.CTkFrame(card, width=5, height=68, corner_radius=3, fg_color=color)
+            stripe.pack(side="left", padx=(13, 10), pady=15)
+            box = ctk.CTkFrame(card, fg_color="transparent")
+            box.pack(side="left", pady=13)
+            ctk.CTkLabel(box, text=label, text_color="#718096",
+                         font=ctk.CTkFont("Segoe UI", 10)).pack(anchor="w")
+            ctk.CTkLabel(box, textvariable=variable, text_color="#162C46",
+                         font=ctk.CTkFont("Segoe UI", 23, weight="bold")).pack(anchor="w")
 
-        info = ttk.Frame(self, padding=(18, 0, 18, 8))
-        info.pack(fill="x")
+        activity = ctk.CTkFrame(content, fg_color="white", corner_radius=12, border_width=1, border_color="#E3EAF2")
+        activity.grid(row=2, column=0, sticky="ew", padx=28, pady=(16, 12))
         self.summary = tk.StringVar(value="Aucune donnée chargée")
-        ttk.Label(info, textvariable=self.summary, foreground="#52667A").pack(side="left")
-        self.progress = ttk.Progressbar(info, mode="determinate", length=360)
-        self.progress.pack(side="right")
+        ctk.CTkLabel(activity, textvariable=self.summary, text_color="#52667A",
+                     font=ctk.CTkFont("Segoe UI", 11)).pack(side="left", padx=16, pady=12)
+        self.progress = ttk.Progressbar(activity, mode="determinate", length=360)
+        self.progress.pack(side="right", padx=16, pady=15)
 
-        table = ttk.Frame(self, padding=(18, 0, 18, 12))
-        table.pack(fill="both", expand=True)
+        table_card = ctk.CTkFrame(content, fg_color="white", corner_radius=14, border_width=1, border_color="#E3EAF2")
+        table_card.grid(row=4, column=0, sticky="nsew", padx=28, pady=(0, 20))
+        table_card.grid_rowconfigure(1, weight=1)
+        table_card.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(table_card, text="Détail des bulletins", text_color="#20364E",
+                     font=ctk.CTkFont("Segoe UI", 14, weight="bold")).grid(
+                         row=0, column=0, sticky="w", padx=16, pady=(14, 10))
+
+        table = tk.Frame(table_card, bg="white", bd=0)
+        table.grid(row=1, column=0, sticky="nsew", padx=2, pady=(0, 2))
+        table.grid_rowconfigure(0, weight=1)
+        table.grid_columnconfigure(0, weight=1)
         cols = ("date", "agent", "mat", "journee", "head", "night", "work", "source_type", "cross", "pages", "conf", "status")
         self.tree = ttk.Treeview(table, columns=cols, show="headings", selectmode="browse")
         headings = {
-            "date": "Date", "agent": "Agent", "mat": "Matricule", "journee": "Journée",
-            "head": "Tête de train", "night": "Nuit 22h–07h", "work": "Travail effectif",
-            "source_type": "Source", "cross": "Croisement", "pages": "Pages",
-            "conf": "Confiance", "status": "Statut",
+            "date": "DATE", "agent": "AGENT", "mat": "MATRICULE", "journee": "JOURNÉE",
+            "head": "TÊTE DE TRAIN", "night": "NUIT 22H–07H", "work": "TRAVAIL",
+            "source_type": "SOURCE", "cross": "CROISEMENT", "pages": "PAGES",
+            "conf": "FIABILITÉ", "status": "STATUT",
         }
-        widths = {
-            "date": 95, "agent": 185, "mat": 95, "journee": 90, "head": 112,
-            "night": 108, "work": 120, "source_type": 72, "cross": 95,
-            "pages": 58, "conf": 78, "status": 145,
-        }
+        widths = {"date": 92, "agent": 175, "mat": 92, "journee": 85, "head": 112, "night": 110,
+                  "work": 105, "source_type": 70, "cross": 92, "pages": 58, "conf": 76, "status": 145}
         for col in cols:
             self.tree.heading(col, text=headings[col], command=lambda x=col: self.sort_by(x))
-            self.tree.column(col, width=widths[col], minwidth=55, anchor="w" if col in ("agent", "status") else "center")
+            self.tree.column(col, width=widths[col], minwidth=55,
+                             anchor="w" if col in ("agent", "status") else "center")
         ybar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         xbar = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
         self.tree.grid(row=0, column=0, sticky="nsew")
         ybar.grid(row=0, column=1, sticky="ns")
         xbar.grid(row=1, column=0, sticky="ew")
-        table.rowconfigure(0, weight=1)
-        table.columnconfigure(0, weight=1)
-        self.tree.tag_configure("ok", background="#EAF8F1")
-        self.tree.tag_configure("review", background="#FFF7E6")
-        self.tree.tag_configure("error", background="#FDECEC")
-        self.tree.bind("<Double-1>", lambda e: self.edit_selected())
+        self.tree.tag_configure("ok", background="#ECFDF5")
+        self.tree.tag_configure("review", background="#FFFBEB")
+        self.tree.tag_configure("error", background="#FEF2F2")
+        self.tree.bind("<Double-1>", lambda event: self.edit_selected())
 
-        self.status_var = tk.StringVar(value="Prêt")
-        ttk.Label(self, textvariable=self.status_var, style="Status.TLabel", anchor="w").pack(side="bottom", fill="x")'''
+        self.status_var = tk.StringVar(value="Prêt • déposez un ZIP ou plusieurs PDF")
+        status = ctk.CTkLabel(content, textvariable=self.status_var, anchor="w",
+                              text_color="#62758A", font=ctk.CTkFont("Segoe UI", 10))
+        status.grid(row=5, column=0, sticky="ew", padx=30, pady=(0, 12))'''
 
 process_files = r'''    def process_files(self, files):
         self.cancel_event.clear()
@@ -234,7 +442,7 @@ process_files = r'''    def process_files(self, files):
         self.after(0, lambda: self.progress.configure(maximum=max(1, total), value=0))
         done = 0
         added = 0
-        workers = max(1, min(4, (os.cpu_count() or 4) // 2))
+        workers = max(1, min(4, os.cpu_count() or 2))
         futures = {}
         executor = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="rdcn-ocr")
         try:
@@ -349,6 +557,7 @@ clear_method = r'''    def clear(self):
         self.progress["value"] = 0
         self.set_status("Prêt")'''
 
+s = replace_top_function(s, "analyze_pdf", "safe_extract_pdfs", fast_analyze)
 s = replace_method(s, "build_ui", build_ui)
 s = replace_method(s, "process_files", process_files)
 s = replace_method(s, "refresh_tree", refresh_tree)
@@ -372,4 +581,4 @@ s = s.replace(
 )
 
 p.write_text(s, encoding="utf-8")
-print("RDCN v2 performance and UI patch applied")
+print("RDCN v2.2 fast OCR and modern UI patch applied")
