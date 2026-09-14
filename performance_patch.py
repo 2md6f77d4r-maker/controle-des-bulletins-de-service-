@@ -148,7 +148,7 @@ def replace_top_function(source, name, next_name, replacement):
     end = source.find(f"def {next_name}(", start)
     if start < 0 or end < 0:
         raise SystemExit(f"top-level function {name} not found")
-    return source[:start] + replacement.rstrip() + "\\n\\n\\n" + source[end:]
+    return source[:start] + replacement.rstrip() + "\n\n\n" + source[end:]
 
 
 fast_analyze = r'''def analyze_pdf(path, source):
@@ -243,8 +243,8 @@ def replace_method(source, name, replacement):
     if start < 0:
         raise SystemExit(f"method {name} not found")
     match = re.search(r"(?m)^    def [A-Za-z_][A-Za-z0-9_]*\(", source[start + 1:])
-    end = start + 1 + match.start() if match else source.find("\\n\\nif __name__", start)
-    return source[:start] + replacement.rstrip() + "\\n\\n" + source[end:]
+    end = start + 1 + match.start() if match else source.find("\n\nif __name__", start)
+    return source[:start] + replacement.rstrip() + "\n\n" + source[end:]
 
 build_ui = r'''    def build_ui(self):
         ctk.set_appearance_mode("light")
@@ -577,7 +577,7 @@ if init_anchor not in s:
 s = s.replace(init_anchor, init_replacement)
 s = s.replace(
     "    def selected_result(self):",
-    helpers + "\\n\\n    def selected_result(self):"
+    helpers + "\n\n    def selected_result(self):"
 )
 
 p.write_text(s, encoding="utf-8")
