@@ -242,7 +242,7 @@ def replace_method(source, name, replacement):
     start = source.find(f"    def {name}(")
     if start < 0:
         raise SystemExit(f"method {name} not found")
-    match = re.search(r"(?m)^    def [A-Za-z_][A-Za-z0-9_]*\\(", source[start + 1:])
+    match = re.search(r"(?m)^    def [A-Za-z_][A-Za-z0-9_]*\(", source[start + 1:])
     end = start + 1 + match.start() if match else source.find("\\n\\nif __name__", start)
     return source[:start] + replacement.rstrip() + "\\n\\n" + source[end:]
 
@@ -581,4 +581,8 @@ s = s.replace(
 )
 
 p.write_text(s, encoding="utf-8")
-print("RDCN v2.2 fast OCR and modern UI patch applied")
+built = p.read_text(encoding="utf-8")
+assert 'APP_VERSION = "2.2.1"' in built, "Version 2.2.1 absente du fichier final"
+assert "class App(ctk.CTk):" in built, "Interface CustomTkinter absente du fichier final"
+assert "Deux pages identiques suffisent" in built, "Moteur OCR rapide absent du fichier final"
+print("RDCN v2.2.1 verified: fast OCR and modern UI are embedded")
