@@ -64,7 +64,7 @@ jobs:
         shell: powershell
         run: |
           New-Item -ItemType Directory -Force -Path '.\package' | Out-Null
-          Copy-Item '.\dist\Controle_BS_RDCN.exe' '.\package\Controle_BS_RDCN.exe' -Force
+          Copy-Item '.\dist\Controle_BS_RDCN_v2.2.1.exe' '.\package\Controle_BS_RDCN_v2.2.1.exe' -Force
           $lines = @(
             'Contrôle BS - RDCN v2.2.1',
             '',
@@ -77,7 +77,6 @@ jobs:
             'Tout écart entre Excel et BS est signalé pour contrôle.'
           )
           Set-Content '.\package\LISEZ-MOI.txt' -Value $lines -Encoding UTF8
-          Compress-Archive -Path '.\package\*' -DestinationPath '.\Controle_BS_RDCN_Windows_v2.2.1.zip' -Force
 
       - name: Upload Windows package
         uses: actions/upload-artifact@v4
