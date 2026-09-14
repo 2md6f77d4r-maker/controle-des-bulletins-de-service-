@@ -33,9 +33,13 @@ jobs:
       - name: Add Excel support to application
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           python excel_patch.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python performance_patch.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m py_compile app.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Install Tesseract OCR
         shell: powershell
