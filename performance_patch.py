@@ -11,7 +11,7 @@ s = s.replace(
     "import os, re, csv, sys, math, time, hashlib, zipfile, tempfile, shutil, threading, traceback",
     "import os, re, csv, sys, math, time, hashlib, zipfile, tempfile, shutil, threading, traceback\nfrom concurrent.futures import ThreadPoolExecutor, as_completed\nimport customtkinter as ctk"
 )
-s = s.replace('APP_VERSION = "1.1.0"', 'APP_VERSION = "2.2.0"  # RDCN performance layer v2')
+s = s.replace('APP_VERSION = "1.1.0"', 'APP_VERSION = "2.2.1"  # RDCN performance layer v2')
 s = s.replace("RENDER_SCALE = 3.0", "RENDER_SCALE = 2.4")
 s = s.replace("fx=1.35, fy=1.35", "fx=1.10, fy=1.10")
 s = s.replace("class App(tk.Tk):", "class App(ctk.CTk):")
@@ -316,7 +316,7 @@ build_ui = r'''    def build_ui(self):
         heading.grid(row=0, column=0, sticky="ew", padx=28, pady=(25, 16))
         ctk.CTkLabel(heading, text="Tableau de contrôle",
                      text_color="#142B44", font=ctk.CTkFont("Segoe UI", 26, weight="bold")).pack(side="left")
-        badge = ctk.CTkLabel(heading, text="  VERSION 2.2  ", text_color="#0F766E",
+        badge = ctk.CTkLabel(heading, text="  VERSION 2.2.1  ", text_color="#0F766E",
                              fg_color="#D9F5F0", corner_radius=8,
                              font=ctk.CTkFont("Segoe UI", 10, weight="bold"), height=28)
         badge.pack(side="left", padx=14)
